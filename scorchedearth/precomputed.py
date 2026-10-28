@@ -34,6 +34,7 @@ USER_AGENT = "scorchedearth/0.1 (+https://github.com/Regan-Koopmans/scorchedeart
 LEVEL = 2  # overview index: 2 -> 80 m
 NODATA = -128
 DIM = 64
+FIRST_YEAR = 2017  # first annual AlphaEarth layer
 
 GDAL_ENV = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
@@ -186,16 +187,24 @@ def build(task_module, source: str = "alphaearth") -> dict:
             out[split] = path
             print(f"[{task_module.NAME}/{split}] cached: {path}")
             continue
-        feet, labels = task_module.patch_footprints(split)
-        print(f"[{task_module.NAME}/{split}] {len(feet):,} patches", flush=True)
-        partial = CACHE / f"{task_module.NAME}-{source}-{split}.partial.npz"
-        emb = SOURCES[source](feet, task_module.YEAR, log=lambda m: print(m, flush=True), partial=partial)
+        got = task_module.patch_footprints(split)
+        feet, labels = got[0], got[1]
+        # Per-patch event years where a task has them, else the task's single year.
+        years = got[2] if len(got) > 2 else np.full(len(feet), task_module.YEAR)
+        years = np.maximum(years, FIRST_YEAR)  # earlier events use the first available year
+        print(f"[{task_module.NAME}/{split}] {len(feet):,} patches, years {sorted(set(years.tolist()))}", flush=True)
+        emb = np.full((len(feet), DIM), np.nan, np.float32)
+        for y in sorted(set(years.tolist())):
+            sel = np.flatnonzero(years == y)
+            partial = CACHE / f"{task_module.NAME}-{source}-{split}-{y}.partial.npz"
+            emb[sel] = SOURCES[source]([feet[i] for i in sel], int(y), log=lambda m: print(m, flush=True), partial=partial)
         if np.isnan(emb).any(axis=1).mean() > 0.01:
             print(f"[{task_module.NAME}/{split}] {int(np.isnan(emb).any(axis=1).sum())} patches still empty; "
                   "not finalising. Rerun to retry failed files.", flush=True)
             continue
-        np.savez(path, emb=emb, labels=labels)
-        partial.unlink(missing_ok=True)
+        np.savez(path, emb=emb, labels=labels, years=years)
+        for y in set(years.tolist()):
+            (CACHE / f"{task_module.NAME}-{source}-{split}-{y}.partial.npz").unlink(missing_ok=True)
         print(f"[{task_module.NAME}/{split}] saved, {int(np.isnan(emb).any(axis=1).sum())} patches without data", flush=True)
         out[split] = path
     return out

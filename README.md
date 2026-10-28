@@ -52,9 +52,15 @@ these once, on Overall: speed averaged over the tasks a model has run, size (the
 every task) and a plot of embedding size against mean linear F1. Baselines are left out of
 the speed and size views.
 
-Caveats: one split, one seed, no error bars, and probe regularisation is fixed rather than
-tuned per model. Gaps under about 0.02 may be noise. Speeds are from one Apple M4 Pro (MPS),
-batch 64, after a warmup batch.
+Caveats: one split, one seed, and probe regularisation is fixed rather than tuned per model.
+A bootstrap check on floods gives 95% intervals of about ±0.012 linear F1, and the top three
+flood models overlap, so gaps under about 0.02 may be noise. Error bars are not yet on the
+page. Speeds are from one Apple M4 Pro (MPS), batch 64, after a warmup batch.
+
+RGB-only models (DINOv2, DINOv3, Scale-MAE) score low because they never see near- or
+shortwave-infrared, where burn scars and water stand out. Trying other RGB preparations on
+DINOv3 (satellite) moved burn scar linear F1 by at most 0.06, and none reached the random
+projection baseline.
 
 ## Usage
 
@@ -63,7 +69,7 @@ uv run main.py download --tasks floods,landslides       # into data/
 uv run main.py run --tasks floods --limit 20            # quick test
 uv run main.py run --n-train 12000 --n-test 6000        # all tasks, all models
 uv run main.py run --tasks burn_scars --models prithvi_eo2_300m,dofa_base
-uv run main.py precompute --tasks crop_type             # look up AlphaEarth embeddings
+uv run main.py precompute --tasks crop_type,floods      # look up AlphaEarth embeddings
 uv run main.py report                                   # results -> index.html
 ```
 
@@ -95,17 +101,31 @@ run. `scorchedearth/precomputed.py` looks them up for each patch's location and 
 stored pixels under it. Nothing is run, so speed does not apply, and a precomputed source
 may see more than our single image. It is reported separately from the live models.
 
-| Source | Coverage | Access |
-|---|---|---|
-| AlphaEarth Foundations (Google / Google DeepMind) | global, annual 2017–2025, 64 dims per 10 m pixel | anonymous, via the [TGE Labs copy](https://source.coop/tge-labs/aef) on Source Cooperative (unofficial), CC-BY 4.0 |
+| Source | Coverage | Access | Status |
+|---|---|---|---|
+| AlphaEarth Foundations (Google / Google DeepMind) | global, annual 2017–2025, 64 dims per 10 m pixel | anonymous, via the [TGE Labs copy](https://source.coop/tge-labs/aef) on Source Cooperative (unofficial), CC-BY 4.0 | crop type done (macro linear F1 0.759); floods in progress |
+| OlmoEarth v1.3 embeddings (Ai2) | annual, 128 dims per 10 m pixel; global 2021–2025, partial before | anonymous, [Source Cooperative](https://source.coop/olmoearth/olmoearth-v1-3-embeddings), OlmoEarth Artifact License | access verified; reader not yet written |
 
-Patches are averaged from AlphaEarth's 80 m overview, which matches full resolution to cosine
-similarity ≥ 0.9997 on spot checks and lets one read serve a whole file. Only tasks whose
-imagery carries coordinates can use this; crop type is the first. Landslides has none.
+How each source builds its embedding (from the papers): AlphaEarth reads up to a year of
+Sentinel-2, Sentinel-1 and Landsat, computes each pixel from a 1.28 km tile around it, and
+outputs unit-length vectors. OlmoEarth v1.3 summarises a calendar year of Sentinel-1,
+Sentinel-2 and Landsat 8/9. Either way the embedding covers a year, so a fire or flood on a
+known date is diluted into the yearly summary, and crop type, a season-long pattern,
+favours them over single-image live models.
 
-Candidates for later: [Tessera](https://github.com/ucam-eo/tessera) (global, annual, CC0)
-and the Major TOM embedding sets on Hugging Face (one snapshot per location, at dates not
-chosen by us).
+AlphaEarth patches are averaged from its 80 m overview, which matches full resolution to
+cosine similarity ≥ 0.9997 on spot checks and lets one read serve a whole file. Rescaling
+averaged vectors to unit length changes crop type scores by at most 0.005, so they are left
+as averaged. Floods use each event's year; the 2016 India event uses AlphaEarth's first
+layer, 2017, since none exists for 2016.
+
+Only tasks whose imagery carries coordinates can use precomputed embeddings: burn scars,
+floods and crop type. Landslides has none.
+
+Not usable yet: [Tessera](https://github.com/ucam-eo/tessera). Its `geotessera` library
+reaches only 3 of 40 sampled US crop patches; its Zarr store on Source Cooperative is
+untested. Major TOM embedding sets on Hugging Face are open but hold one image per location
+at dates not chosen by us. Clay and Earth Index cover mostly 2024 onward.
 
 ## Adding a model
 
@@ -119,11 +139,13 @@ reflectance in [0, 1].
 Add a module to `scorchedearth/datasets/` with `NAME`, `download()` and
 `load(limit) -> TaskData`, then list it in `datasets/__init__.py`. Use `tasks.patchify` for
 binary masks or `tasks.patchify_majority` for class maps. To support precomputed
-embeddings, also provide `YEAR` and `patch_footprints(split)`.
+embeddings, also provide `YEAR` and `patch_footprints(split)`, which returns footprints and
+labels in load order, plus optionally a per-patch year.
 
 ## Licences and credits
 
 HLS Burn Scars and Multi-temporal crop: IBM / NASA, CC-BY 4.0. Sen1Floods11: Cloud to
 Street. Landslide4Sense: IARAI. AlphaEarth Foundations Satellite Embedding dataset: produced
-by Google and Google DeepMind, CC-BY 4.0. `scorchedearth/vendor/prithvi_mae.py` is IBM's
+by Google and Google DeepMind, CC-BY 4.0. OlmoEarth v1.3 embeddings: Ai2, OlmoEarth Artifact
+License. `scorchedearth/vendor/prithvi_mae.py` is IBM's
 Apache-2.0 code with its licence header intact.

@@ -52,6 +52,45 @@ def load_split(split: str, limit: int | None = None):
     return scenes, masks
 
 
+def event_years() -> dict[str, int]:
+    """Year of each flood event, from the dataset's Sentinel-2 acquisition dates.
+    Chip IDs prefixed "Mekong" belong to the event the metadata calls Cambodia."""
+    import json
+
+    md = json.loads((ROOT / "Sen1Floods11_Metadata.geojson").read_text())
+    years = {f["properties"]["location"]: int(f["properties"]["s2_date"][:4]) for f in md["features"]}
+    years["Mekong"] = years["Cambodia"]
+    return years
+
+
+def patch_footprints(split: str, limit: int | None = None):
+    """Footprint, label and event year of every kept patch, in the same order as load().
+    Footprints are (crs, west, south, east, north) in the chip's CRS (EPSG:4326)."""
+    import rasterio
+
+    from ..tasks import MAX_NODATA, PATCH, grid
+
+    years = event_years()
+    feet, labels, yrs = [], [], []
+    split_name = {"training": "train", "validation": "test"}.get(split, split)
+    for i in _ids(split_name)[:limit]:
+        mask = tifffile.imread(ROOT / "data" / "LabelHand" / f"{i}_LabelHand.tif").astype(np.int8)
+        with rasterio.open(ROOT / "data" / "S2L1CHand" / f"{i}_S2Hand.tif") as r:
+            crs, t, h = r.crs, r.transform, r.height
+        m = grid(mask[None])
+        valid = m >= 0
+        keep = (1 - valid.mean(axis=(1, 2))) <= MAX_NODATA
+        frac = (m == 1).sum(axis=(1, 2)) / np.maximum(valid.sum(axis=(1, 2)), 1)
+        g = h // PATCH
+        for k in np.flatnonzero(keep):
+            r_, c_ = divmod(int(k), g)
+            w, n = t.c + c_ * PATCH * t.a, t.f + r_ * PATCH * t.e
+            feet.append((crs, w, n + PATCH * t.e, w + PATCH * t.a, n))
+            labels.append(float(frac[k]))
+            yrs.append(years[i.split("_")[0]])
+    return feet, np.array(labels, np.float32), np.array(yrs)
+
+
 def load(limit: int | None = None) -> TaskData:
     x_tr, y_tr = patchify(*load_split("train", limit))
     x_te, y_te = patchify(*load_split("test", limit))
