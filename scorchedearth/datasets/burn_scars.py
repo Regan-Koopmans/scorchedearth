@@ -39,7 +39,7 @@ def download(data_dir: Path = DATA_DIR) -> Path:
 
 def _pairs(split_dir: Path) -> list[tuple[Path, Path]]:
     """Match each scene to its mask by shared filename prefix."""
-    scenes = sorted(split_dir.glob("*_merged.tif"))
+    scenes = [p for p in sorted(split_dir.glob("*_merged.tif")) if not p.name.startswith(".")]
     pairs = []
     for scene in scenes:
         prefix = scene.name.removesuffix("_merged.tif")

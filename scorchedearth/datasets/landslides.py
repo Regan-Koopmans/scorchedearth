@@ -25,14 +25,15 @@ DATA_DIR = Path("data/landslide4sense")
 S2_NAMES = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12"]
 
 # Release value x SCALE = reflectance. Fitted so per-band training medians match
-# Sentinel-2 L1C medians from Sen1Floods11's training chips. An approximation: the
-# release's true divisors are not published.
-SCALE = (0.1493, 0.1215, 0.1131, 0.0935, 0.1130, 0.2238, 0.2766, 0.2512, 0.0265, 0.0013, 0.1831, 0.0924)
+# Sentinel-2 L1C medians from Sen1Floods11's training chips, over all 3,799 training
+# chips. An approximation: the release's true divisors are not published, and B9 / B10
+# come out implausibly low, so treat those two bands as unreliable.
+SCALE = (0.1557, 0.1300, 0.1221, 0.1110, 0.1216, 0.2147, 0.2616, 0.2397, 0.0312, 0.0021, 0.1806, 0.0976)
 
 BANDS = Bands(
     tuple(S2_BY_NAME[n] for n in S2_NAMES),
-    mean=(0.1423, 0.1175, 0.1150, 0.0972, 0.1273, 0.2375, 0.2853, 0.2633, 0.0377, 0.0022, 0.2061, 0.1054),
-    std=(0.0186, 0.0198, 0.0261, 0.0326, 0.0368, 0.0691, 0.0886, 0.0853, 0.0088, 0.0005, 0.0859, 0.0528),
+    mean=(0.1440, 0.1199, 0.1164, 0.1065, 0.1243, 0.2238, 0.2709, 0.2508, 0.0365, 0.0025, 0.1894, 0.1011),
+    std=(0.0222, 0.0288, 0.0389, 0.0635, 0.0559, 0.0959, 0.1217, 0.1187, 0.0160, 0.0014, 0.0961, 0.0646),
 )
 
 

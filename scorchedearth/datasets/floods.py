@@ -4,8 +4,7 @@ Hand-labelled 512x512 chips. Sentinel-2 L1C, 13 bands, scaled 0-10000.
 Labels: 1 = water, 0 = not water, -1 = no data.
 Split: the dataset's own train / test lists. Bolivia, held out by the authors, is not used.
 Task: binary, patch is more than half water. Optical bands only; Sentinel-1 radar is not
-used yet, so every model sees the same input. Flooded patches are ~2% of training data,
-too few for a 20-neighbour vote to ever favour them, so kNN F1 is not reported.
+used yet, so every model sees the same input.
 """
 
 import tarfile
@@ -56,4 +55,4 @@ def load_split(split: str, limit: int | None = None):
 def load(limit: int | None = None) -> TaskData:
     x_tr, y_tr = patchify(*load_split("train", limit))
     x_te, y_te = patchify(*load_split("test", limit))
-    return TaskData(NAME, BANDS, "binary", x_tr, y_tr, x_te, y_te, skip=("knn_f1",))
+    return TaskData(NAME, BANDS, "binary", x_tr, y_tr, x_te, y_te)

@@ -48,7 +48,9 @@ def download() -> Path:
 
 def load_split(split: str, limit: int | None = None):
     d = DATA_DIR / f"{split}_chips"
-    pairs = [(p, d / p.name.replace("_merged.tif", ".mask.tif")) for p in sorted(d.glob("*_merged.tif"))]
+    # The training archive carries macOS "._" sidecar files beside every chip; skip them.
+    imgs = [p for p in sorted(d.glob("*_merged.tif")) if not p.name.startswith(".")]
+    pairs = [(p, d / p.name.replace("_merged.tif", ".mask.tif")) for p in imgs]
     pairs = [(i, m) for i, m in pairs if m.exists()][:limit]  # tolerate partial downloads
     if not pairs:
         raise FileNotFoundError(f"No crop chips in {d}. Run `download` first.")
