@@ -39,6 +39,12 @@ p { margin: 0 0 6px; }
 hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }
 a { color: var(--win); }
 .meta { font: 13px/1.5 var(--f-mono); color: var(--grey); }
+nav.tasks { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 4px; }
+nav.tasks button { font: 13px/1 var(--f-mono); color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 5px 9px; cursor: pointer; }
+nav.tasks button[aria-selected="true"] { background: var(--ink); color: var(--paper); }
+nav.tasks button:disabled { color: var(--grey); border-color: var(--grey); cursor: default; }
+nav.tasks button:focus-visible { outline: 2px solid var(--win); outline-offset: 2px; }
+.empty { color: var(--grey); margin-top: 18px; }
 ul.winners { margin: 8px 0 0; padding-left: 20px; }
 ul.winners li { margin: 2px 0; }
 
@@ -83,21 +89,23 @@ td:first-child, td:nth-child(2) { text-align: left; }
     <h1>ScorchedEarth</h1>
     <button id="theme" type="button" aria-label="Colour theme">Theme: system</button>
   </div>
-  <p>Geospatial embedding benchmark on HLS burn scars.</p>
+  <p>Geospatial embedding benchmark across remote sensing tasks.</p>
+  <nav class="tasks" id="tasks" role="tablist" aria-label="Task"></nav>
+  <p id="task-what"></p>
   <p class="meta" id="conditions"></p>
   <ul class="winners" id="winners"></ul>
 
   <div id="charts"></div>
 
   <hr>
-  <details>
+  <details id="all-numbers">
     <summary>All numbers</summary>
     <div class="tablewrap"><table id="table"></table></div>
   </details>
 
   <hr>
-  <p class="meta">Data: HLS Burn Scars (IBM / NASA, CC-BY-4.0). 804 scenes, 512&times;512, six bands, 2018&ndash;2021, contiguous US.<br>
-  Frozen embeddings. Probes trained on the training split, scored on validation. Blue marks the winner of each metric.</p>
+  <p class="meta"><span id="credit"></span><br>
+  Frozen embeddings. Probes trained on the training split, scored on a held-out split. Blue marks the winner of each metric.</p>
   <p class="meta">Generated <time id="generated"></time>.</p>
 </main>
 
@@ -105,36 +113,34 @@ td:first-child, td:nth-child(2) { text-align: left; }
 const DATA = __DATA__;
 
 const FAMILIES = {
+  normal: "baseline",
   unique: "HLS",
   magic: "any-sensor",
   rare: "S2",
   set: "RGB",
 };
 
+// Metric definitions. `{pos}` and `{posPatch}` are filled from each task's wording.
 const METRICS = [
-  { key: "linear_f1", title: "Linear F1", what: "Logistic probe. Is the patch more than half burned?", fmt: v => v.toFixed(3) },
+  { key: "linear_f1", title: "Linear F1", what: "Logistic probe. {question}", fmt: v => v.toFixed(3) },
   { key: "knn_f1", title: "kNN F1", what: "20 nearest neighbours vote on the same label. No training.", fmt: v => v.toFixed(3) },
-  { key: "fraction_r2", title: "Burned fraction R²", what: "Ridge probe. How much of the patch burned?", fmt: v => v.toFixed(3) },
-  { key: "retrieval_p@10", title: "Retrieval P@10", what: "Of the 10 nearest patches to a burned patch, the share that are burned.", fmt: v => v.toFixed(3) },
-  { key: "linear_auc", title: "Linear AUC", what: "How often the logistic probe ranks a burned patch above an unburned one. 0.5 is chance, 1 is perfect.", fmt: v => v.toFixed(3) },
+  { key: "fraction_r2", title: "{Pos} fraction R²", what: "Ridge probe. How much of the patch is {pos}?", fmt: v => v.toFixed(3) },
+  { key: "retrieval_p@10", title: "Retrieval P@10", what: "Search with a {posPatch}: the share of the 10 nearest that are also {posPatch}es.", fmt: v => v.toFixed(3) },
+  { key: "linear_auc", title: "Linear AUC", what: "How often the logistic probe ranks a {posPatch} above {negPatch}. 0.5 is chance, 1 is perfect.", fmt: v => v.toFixed(3) },
+  { key: "linear_acc", title: "Linear accuracy", what: "Share of patches the logistic probe labels correctly.", fmt: v => v.toFixed(3) },
   { key: "patches_per_sec", title: "Inference speed", what: "Patches embedded per second. Log scale.", fmt: v => fmtNum(v) + "/s", log: true },
   { key: "bytes_per_embedding", title: "Embedding size", what: "Bytes per patch at float32. Smaller is better. Log scale.", fmt: v => fmtBytes(v), log: true, lowerBetter: true },
 ];
+const ACCURACY = ["linear_f1", "knn_f1", "fraction_r2", "retrieval_p@10", "linear_acc"];
 
 function fmtNum(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + "k" : v >= 100 ? v.toFixed(0) : v.toFixed(1); }
 function fmtBytes(v) { return v >= 1024 ? (v / 1024).toFixed(v % 1024 ? 1 : 0) + " KB" : v + " B"; }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
-const models = DATA.models;
-document.getElementById("conditions").textContent = DATA.conditions;
 const gen = document.getElementById("generated");
 gen.textContent = DATA.generated;
 gen.dateTime = DATA.generated.replace(" ", "T").replace(" UTC", "Z");
-
-function ranked(metric) {
-  const rows = models.filter(m => Number.isFinite(m.scores[metric.key]));
-  return rows.sort((a, b) => metric.lowerBetter ? a.scores[metric.key] - b.scores[metric.key] : b.scores[metric.key] - a.scores[metric.key]);
-}
 
 function niceTicks(lo, hi, n = 5) {
   const span = hi - lo, raw = span / n, mag = 10 ** Math.floor(Math.log10(raw));
@@ -158,13 +164,19 @@ function scaleFor(metric, rows) {
   return { pos, ticks: niceTicks(lo, hi, 4), zero: pos(0), fmtTick: v => (Math.abs(v) < 1e-9 ? "0" : v.toFixed(v % 1 ? (String(v).split(".")[1] || "").length : 0)) };
 }
 
-function chart(metric) {
-  const rows = ranked(metric);
+function ranked(models, metric) {
+  const rows = models.filter(m => Number.isFinite(m.scores[metric.key]));
+  return rows.sort((a, b) => metric.lowerBetter ? a.scores[metric.key] - b.scores[metric.key] : b.scores[metric.key] - a.scores[metric.key]);
+}
+
+function chart(models, metric) {
+  const rows = ranked(models, metric);
   const s = scaleFor(metric, rows);
   const bars = rows.map((m, i) => {
     const v = m.scores[metric.key], sc = m.scores;
     const a = metric.log ? 0 : Math.min(s.zero, s.pos(v)), b = metric.log ? s.pos(v) : Math.max(s.zero, s.pos(v));
-    const tip = `${m.label} (${FAMILIES[m.family]}${m.params ? ", " + m.params : ""})\n${metric.title}: ${metric.fmt(v)}, rank ${i + 1} of ${rows.length}\n${sc.dim} dims, ${fmtNum(sc.patches_per_sec)} patches/s${m.note ? "\n" + m.note : ""}`;
+    const extra = sc.dim ? `\n${sc.dim} dims, ${fmtNum(sc.patches_per_sec)} patches/s` : "";
+    const tip = `${m.label} (${FAMILIES[m.family]}${m.params ? ", " + m.params : ""})\n${metric.title}: ${metric.fmt(v)}, rank ${i + 1} of ${rows.length}${extra}${m.note ? "\n" + m.note : ""}`;
     return `<div class="row${i === 0 ? " top" : ""}" tabindex="0" title="${esc(tip)}">
       <span class="name">${esc(m.label)} <span class="fam">${esc(FAMILIES[m.family])}</span></span>
       <span class="track"><span class="bar" style="left:${(a * 100).toFixed(2)}%;width:${Math.max(0.5, (b - a) * 100).toFixed(2)}%"></span></span>
@@ -181,21 +193,103 @@ function chart(metric) {
   </section>`;
 }
 
-document.getElementById("charts").innerHTML = METRICS.map(chart).join("");
+// Fill a metric's wording from the task, e.g. "burned", "a burned patch".
+function worded(metric, task) {
+  const w = task.words || {};
+  const fill = t => t.replaceAll("{question}", w.question || "").replaceAll("{Pos}", cap(w.pos || "positive"))
+    .replaceAll("{posPatch}", w.posPatch || "positive patch").replaceAll("{negPatch}", w.negPatch || "negative patch")
+    .replaceAll("{pos}", w.pos || "positive");
+  return { ...metric, title: fill(metric.title), what: fill(metric.what) };
+}
 
-// Winners, summary before detail.
-const by = (list, key) => [...list].sort((a, b) => b.scores[key] - a.scores[key])[0];
-const accKeys = ["linear_f1", "knn_f1", "fraction_r2", "retrieval_p@10"];
-const meanRank = m => accKeys.reduce((s, k) => s + ranked(METRICS.find(x => x.key === k)).indexOf(m) + 1, 0) / accKeys.length;
-const overall = [...models].sort((a, b) => meanRank(a) - meanRank(b))[0];
-const fast = by(models, "patches_per_sec");
-const small = [...models].sort((a, b) => a.scores.bytes_per_embedding - b.scores.bytes_per_embedding || b.scores.linear_f1 - a.scores.linear_f1)[0];
-document.getElementById("winners").innerHTML = [
-  `Best overall: <b>${esc(overall.label)}</b>, mean rank ${meanRank(overall).toFixed(1)} across 4 accuracy tests.`,
-  `Best linear F1: <b>${esc(by(models, "linear_f1").label)}</b>, ${by(models, "linear_f1").scores.linear_f1.toFixed(3)}.`,
-  `Fastest: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s.`,
-  `Smallest embedding: <b>${esc(small.label)}</b>, ${fmtBytes(small.scores.bytes_per_embedding)}, linear F1 ${small.scores.linear_f1.toFixed(3)}.`,
-].map(s => `<li>${s}</li>`).join("");
+// The Overall view: each model's mean rank across tasks, from each task's mean accuracy rank.
+function overallModels() {
+  const per = {};
+  for (const t of DATA.tasks.filter(t => t.models.length)) {
+    const keys = ACCURACY.filter(k => t.models.some(m => Number.isFinite(m.scores[k])));
+    for (const m of t.models) {
+      const r = keys.reduce((s, k) => s + ranked(t.models, { key: k }).indexOf(m) + 1, 0) / keys.length;
+      const rank = 1 + t.models.filter(o => keys.reduce((s, k) => s + ranked(t.models, { key: k }).indexOf(o) + 1, 0) / keys.length < r).length;
+      (per[m.id] ??= { m, ranks: {} }).ranks[t.id] = rank;
+    }
+  }
+  const done = DATA.tasks.filter(t => t.models.length);
+  return Object.values(per).filter(p => Object.keys(p.ranks).length === done.length).map(({ m, ranks }) => ({
+    ...m, scores: { mean_rank: Object.values(ranks).reduce((a, b) => a + b, 0) / done.length, ...Object.fromEntries(done.map(t => ["rank_" + t.id, ranks[t.id]])) },
+  }));
+}
+
+function render(taskId) {
+  const isOverall = taskId === "overall";
+  const task = DATA.tasks.find(t => t.id === taskId);
+  const done = DATA.tasks.filter(t => t.models.length);
+  for (const b of document.querySelectorAll("nav.tasks button")) b.setAttribute("aria-selected", String(b.dataset.task === taskId));
+
+  const charts = document.getElementById("charts"), winners = document.getElementById("winners"), table = document.getElementById("table");
+  const details = document.getElementById("all-numbers");
+
+  if (isOverall) {
+    const models = overallModels();
+    document.getElementById("task-what").textContent = `Each model's average rank across the ${done.length} tasks with results. Per task, rank is the mean of its accuracy ranks.`;
+    document.getElementById("conditions").textContent = done.length < 2 ? "Only one task has results so far, so this view matches it." : "";
+    document.getElementById("credit").textContent = "Data credits are listed on each task's tab.";
+    const metrics = [{ key: "mean_rank", title: "Mean rank across tasks", what: "Lower is better. 1 would mean first on every task.", fmt: v => v.toFixed(1), lowerBetter: true },
+      ...done.map(t => ({ key: "rank_" + t.id, title: t.title + " rank", what: t.short, fmt: v => v.toFixed(0), lowerBetter: true }))];
+    charts.innerHTML = models.length ? metrics.map(m => chart(models, m)).join("") : `<p class="empty">No results yet.</p>`;
+    const best = ranked(models, metrics[0])[0];
+    winners.innerHTML = best ? `<li>Best across tasks: <b>${esc(best.label)}</b>, mean rank ${best.scores.mean_rank.toFixed(1)}.</li>` : "";
+    details.hidden = true;
+    return;
+  }
+
+  document.getElementById("task-what").textContent = task.what;
+  document.getElementById("credit").textContent = task.credit;
+  details.hidden = !task.models.length;
+  if (!task.models.length) {
+    document.getElementById("conditions").textContent = "";
+    winners.innerHTML = "";
+    charts.innerHTML = `<p class="empty">No results yet. Run <code>uv run main.py run --tasks ${esc(task.id)}</code>, then <code>uv run main.py report</code>.</p>`;
+    return;
+  }
+  const models = task.models;
+  document.getElementById("conditions").textContent = task.conditions;
+  const metrics = METRICS.filter(m => models.some(x => Number.isFinite(x.scores[m.key]))).map(m => worded(m, task));
+  charts.innerHTML = metrics.map(m => chart(models, m)).join("");
+
+  const keys = ACCURACY.filter(k => metrics.some(m => m.key === k));
+  const meanRank = m => keys.reduce((s, k) => s + ranked(models, { key: k }).indexOf(m) + 1, 0) / keys.length;
+  const by = key => [...models].sort((a, b) => b.scores[key] - a.scores[key])[0];
+  const overall = [...models].sort((a, b) => meanRank(a) - meanRank(b))[0];
+  const learned = models.filter(m => m.family !== "normal");
+  const pool = learned.length ? learned : models;
+  const fast = [...pool].sort((a, b) => b.scores.patches_per_sec - a.scores.patches_per_sec)[0];
+  const small = [...pool].sort((a, b) => a.scores.bytes_per_embedding - b.scores.bytes_per_embedding || b.scores.linear_f1 - a.scores.linear_f1)[0];
+  const base = models.filter(m => m.family === "normal").sort((a, b) => b.scores.linear_f1 - a.scores.linear_f1)[0];
+  winners.innerHTML = [
+    `Best overall: <b>${esc(overall.label)}</b>, mean rank ${meanRank(overall).toFixed(1)} across ${keys.length} accuracy tests.`,
+    `Best linear F1: <b>${esc(by("linear_f1").label)}</b>, ${by("linear_f1").scores.linear_f1.toFixed(3)}.`,
+    `Fastest foundation model: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s.`,
+    `Smallest foundation embedding: <b>${esc(small.label)}</b>, ${fmtBytes(small.scores.bytes_per_embedding)}, linear F1 ${small.scores.linear_f1.toFixed(3)}.`,
+    base && `Baseline to beat: <b>${esc(base.label)}</b>, linear F1 ${base.scores.linear_f1.toFixed(3)}, no learned weights.`,
+  ].filter(Boolean).map(s => `<li>${s}</li>`).join("");
+
+  const cols = [["Model", m => esc(m.label)], ["Family", m => FAMILIES[m.family]], ...metrics.map(x => [x.title, m => Number.isFinite(m.scores[x.key]) ? esc(x.fmt(m.scores[x.key])) : "–"]), ["Dim", m => m.scores.dim]];
+  table.innerHTML = `<thead><tr>${cols.map(c => `<th>${esc(c[0])}</th>`).join("")}</tr></thead><tbody>` +
+    [...models].sort((a, b) => meanRank(a) - meanRank(b)).map(m => `<tr>${cols.map(c => `<td>${c[1](m)}</td>`).join("")}</tr>`).join("") + "</tbody>";
+}
+
+// Task tabs. The selected task lives in the URL hash, e.g. #floods.
+const nav = document.getElementById("tasks");
+const tabs = [{ id: "overall", title: "Overall" }, ...DATA.tasks];
+nav.innerHTML = tabs.map(t => {
+  const empty = t.id !== "overall" && !t.models.length;
+  return `<button type="button" role="tab" data-task="${esc(t.id)}" aria-selected="false"${empty ? ' title="No results yet"' : ""}>${esc(t.title)}${empty ? " (pending)" : ""}</button>`;
+}).join("");
+const firstDone = (DATA.tasks.find(t => t.models.length) || DATA.tasks[0]).id;
+const fromHash = () => { const h = location.hash.slice(1); return tabs.some(t => t.id === h) ? h : firstDone; };
+nav.addEventListener("click", e => { const b = e.target.closest("button[data-task]"); if (b) { history.replaceState(null, "", "#" + b.dataset.task); render(b.dataset.task); } });
+window.addEventListener("hashchange", () => render(fromHash()));
+render(fromHash());
 
 // Theme toggle: system -> light -> dark -> system.
 const themeBtn = document.getElementById("theme");
@@ -211,10 +305,4 @@ themeBtn.addEventListener("click", () => {
   applyTheme(next);
   try { next === "system" ? localStorage.removeItem("theme") : localStorage.setItem("theme", next); } catch (e) {}
 });
-
-// Full table.
-const cols = [["Model", m => esc(m.label)], ["Family", m => FAMILIES[m.family]], ...METRICS.map(x => [x.title, m => esc(x.fmt(m.scores[x.key]))]), ["Dim", m => m.scores.dim]];
-document.getElementById("table").innerHTML =
-  `<thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>` +
-  [...models].sort((a, b) => meanRank(a) - meanRank(b)).map(m => `<tr>${cols.map(c => `<td>${c[1](m)}</td>`).join("")}</tr>`).join("") + "</tbody>";
 </script>

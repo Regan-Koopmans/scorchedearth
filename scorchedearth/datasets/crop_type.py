@@ -28,11 +28,11 @@ MIN_SHARE = 0.3
 CLASSES = ["no data", "natural vegetation", "forest", "corn", "soybeans", "wetlands", "developed/barren",
            "open water", "winter wheat", "alfalfa", "fallow/idle cropland", "cotton", "sorghum", "other"]
 
-# Middle-date stats from 98 training chips. TODO: recompute on the full set.
+# Middle-date reflectance stats over all 3,083 training chips.
 BANDS = Bands(
     tuple(HLS),
-    mean=(0.0526, 0.0884, 0.0984, 0.3289, 0.2776, 0.1841),
-    std=(0.0321, 0.0410, 0.0669, 0.0797, 0.1050, 0.1045),
+    mean=(0.0506, 0.0852, 0.0924, 0.3273, 0.2691, 0.1761),
+    std=(0.0301, 0.0381, 0.0622, 0.0843, 0.1017, 0.1005),
 )
 
 

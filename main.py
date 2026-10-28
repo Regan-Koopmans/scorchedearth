@@ -11,13 +11,16 @@ import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scorchedearth import foundation  # noqa: F401  foundation registers models
+from scorchedearth import baselines, foundation  # noqa: F401  both register models
 from scorchedearth.datasets import TASKS
 from scorchedearth.models import MODELS
 from scorchedearth.run import RESULTS, run
 
 # Display name, family (item quality), size, note. Family drives colour on the leaderboard.
 MODEL_INFO = {
+    "band_stats": ("Band stats", "normal", "", "Per-band mean and std. No learned weights."),
+    "spectral_indices": ("NDVI + NBR", "normal", "", "Vegetation and burn indices plus band means. No learned weights."),
+    "random_projection": ("Random projection", "normal", "", "Random projection of downsampled pixels. Sanity floor."),
     "prithvi_eo2_300m": ("Prithvi-EO 2.0 300M", "unique", "300M", "Pretrained on HLS, same six bands."),
     "prithvi_eo2_600m": ("Prithvi-EO 2.0 600M", "unique", "600M", "Pretrained on HLS, same six bands."),
     "prithvi_eo2_100m": ("Prithvi-EO 2.0 100M", "unique", "100M", "Pretrained on HLS, same six bands."),
@@ -44,23 +47,60 @@ MODEL_INFO = {
 }
 
 
+# Leaderboard text per task. `words` fills the metric descriptions.
+TASK_INFO = {
+    "burn_scars": {
+        "title": "Burn scars",
+        "short": "Wildfire scars, HLS, contiguous US.",
+        "what": "Is a 64\u00d764 patch of HLS imagery more than half burn scar? Wildfires, contiguous US, 2018\u20132021.",
+        "credit": "Data: HLS Burn Scars (IBM / NASA, CC-BY-4.0). 804 scenes, 512\u00d7512, six bands, 30 m.",
+        "words": {"question": "Is the patch more than half burned?", "pos": "burned", "posPatch": "burned patch", "negPatch": "an unburned one"},
+    },
+    "floods": {
+        "title": "Floods",
+        "short": "Flood water, Sentinel-2, 11 events worldwide.",
+        "what": "Is a 64\u00d764 Sentinel-2 patch more than half flood water? 11 flood events on six continents.",
+        "credit": "Data: Sen1Floods11 (Cloud to Street). 446 hand-labelled chips, 13 bands, 10 m. Optical only.",
+        "words": {"question": "Is the patch more than half water?", "pos": "water", "posPatch": "flooded patch", "negPatch": "a dry one"},
+    },
+    "landslides": {
+        "title": "Landslides",
+        "short": "Landslides, Sentinel-2, four regions.",
+        "what": "Does a 64\u00d764 Sentinel-2 patch contain any landslide? Four regions, chips at 10 m.",
+        "credit": "Data: Landslide4Sense (IARAI). 128\u00d7128 chips, 12 Sentinel-2 bands, 10 m. Slope and elevation not used.",
+        "words": {"question": "Does the patch contain a landslide?", "pos": "landslide", "posPatch": "landslide patch", "negPatch": "a stable one"},
+    },
+    "crop_type": {
+        "title": "Crop type",
+        "short": "Land cover and crops, HLS, US, 2022.",
+        "what": "Which of 13 land-cover classes dominates a 64\u00d764 HLS patch? US crops, 2022, middle of three dates.",
+        "credit": "Data: Multi-temporal crop classification (IBM / NASA, Clark University, CC-BY-4.0). 224\u00d7224 chips, 30 m.",
+        "words": {"question": "Which class dominates the patch? Macro F1 over classes.", "pos": "", "posPatch": ""},
+    },
+}
+
+
 def report():
-    # The leaderboard shows burn scars until it gains a task selector.
-    rows = {p.stem: json.loads(p.read_text()) for p in sorted((RESULTS / "burn_scars").glob("*.json")) if p.stem in MODEL_INFO}
-    models = []
-    for key, scores in rows.items():
-        label, family, params, note = MODEL_INFO.get(key, (key, "rare", "", ""))
-        models.append({"id": key, "label": label, "family": family, "params": params, "note": note, "scores": scores})
-    any_run = next(iter(rows.values()), {})
-    conditions = (
-        f"{len(models)} models. {any_run.get('n_train', 0):,} training and {any_run.get('n_test', 0):,} test patches "
-        f"of 64\u00d764 px, fixed random sample. Speed on {platform.machine()} {torch_device()}, batch 64."
-    )
+    device = f"{platform.machine()} {torch_device()}"
+    out = []
+    for task_id in TASKS:
+        rows = {p.stem: json.loads(p.read_text()) for p in sorted((RESULTS / task_id).glob("*.json")) if p.stem in MODEL_INFO}
+        models = []
+        for key, scores in rows.items():
+            label, family, params, note = MODEL_INFO[key]
+            models.append({"id": key, "label": label, "family": family, "params": params, "note": note, "scores": scores})
+        any_run = next(iter(rows.values()), {})
+        conditions = (
+            f"{len(models)} models. {any_run.get('n_train', 0):,} training and {any_run.get('n_test', 0):,} test patches "
+            f"of 64\u00d764 px, fixed random sample. Speed on {device}, batch 64."
+        ) if models else ""
+        out.append({"id": task_id, **TASK_INFO[task_id], "conditions": conditions, "models": models})
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    data = json.dumps({"models": models, "conditions": conditions, "generated": generated}).replace("</", "<\\/")
+    data = json.dumps({"tasks": out, "generated": generated}).replace("</", "<\\/")
     template = (Path(__file__).parent / "scorchedearth" / "leaderboard.html").read_text()
     Path("index.html").write_text(template.replace("__DATA__", data))
-    print(f"Wrote index.html with {len(models)} models")
+    summary = ", ".join(f"{t['id']} {len(t['models'])}" for t in out)
+    print(f"Wrote index.html ({summary} models)")
 
 
 def torch_device() -> str:

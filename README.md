@@ -45,12 +45,14 @@ uv run main.py report                                   # results -> index.html
 ```
 
 Embeddings are cached in `cache/<task>/<model>/`, so re-scoring costs seconds.
-Results go to `results/<task>/<model>.json`. The leaderboard currently shows burn scars only.
+Results go to `results/<task>/<model>.json`. The leaderboard has a tab per task plus an
+Overall tab ranking models by mean rank across finished tasks; `index.html#floods` links to one.
 
 ## Models
 
 | Family | Models | Band handling |
 |---|---|---|
+| Baselines | band stats, NDVI + NBR, random projection | any band set; no learned weights |
 | HLS-native | Prithvi-EO 2.0 tiny, 100M, 300M, 600M | the six HLS bands, nearest available |
 | Any-sensor | DOFA-B/L, Panopticon, Copernicus-FM, OlmoEarth v1 Base/Large, v1.2 Base | the task's true wavelengths |
 | Sentinel-2 | SSL4EO MoCo R50, DINO ViT-S, MAE ViT-B/L, DeCUR R50, SoftCon, CROMA, Satlas | each expected band, or nearest wavelength if the task lacks it |
