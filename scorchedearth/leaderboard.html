@@ -39,6 +39,12 @@ p { margin: 0 0 6px; }
 hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }
 a { color: var(--win); }
 .meta { font: 13px/1.5 var(--f-mono); color: var(--grey); }
+nav.mode { display: inline-flex; margin: 14px 0 0; border: 1px solid var(--ink); }
+nav.mode button { font: 13px/1 var(--f-mono); color: var(--ink); background: var(--paper); border: 0; padding: 6px 12px; cursor: pointer; }
+nav.mode button + button { border-left: 1px solid var(--ink); }
+nav.mode button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+nav.mode button:focus-visible { outline: 2px solid var(--win); outline-offset: 2px; }
+.mode-note { color: var(--grey); font-size: 15px; margin-top: 8px; }
 nav.tasks { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 4px; }
 nav.tasks button { font: 13px/1 var(--f-mono); color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 5px 9px; cursor: pointer; }
 nav.tasks button[aria-selected="true"] { background: var(--ink); color: var(--paper); }
@@ -109,6 +115,11 @@ td:first-child, td:nth-child(2) { text-align: left; }
     <button id="theme" type="button" aria-label="Colour theme">Theme: system</button>
   </div>
   <p>Geospatial embedding benchmark across remote sensing tasks.</p>
+  <nav class="mode" id="mode" aria-label="Embedding source">
+    <button type="button" data-mode="live" aria-pressed="true">Live models</button>
+    <button type="button" data-mode="precomputed" aria-pressed="false">Precomputed</button>
+  </nav>
+  <p class="mode-note" id="mode-note" hidden>Precomputed embeddings are looked up by location, not computed from our image. They may summarise a whole year from several sensors, while live models see one image, so they are ranked separately.</p>
   <nav class="tasks" id="tasks" role="tablist" aria-label="Task"></nav>
   <p id="task-what"></p>
   <p class="meta" id="conditions"></p>
@@ -133,6 +144,7 @@ td:first-child, td:nth-child(2) { text-align: left; }
 const DATA = __DATA__;
 
 const FAMILIES = {
+  precomputed: "precomputed",
   normal: "baseline",
   unique: "HLS",
   magic: "any-sensor",
@@ -199,7 +211,7 @@ function chart(models, metric) {
   const bars = rows.map((m, i) => {
     const v = m.scores[metric.key], sc = m.scores;
     const a = metric.log ? 0 : Math.min(s.zero, s.pos(v)), b = metric.log ? s.pos(v) : Math.max(s.zero, s.pos(v));
-    const extra = sc.dim ? `\n${sc.dim} dims, ${fmtNum(sc.patches_per_sec)} patches/s` : "";
+    const extra = sc.dim ? `\n${sc.dim} dims` + (Number.isFinite(sc.patches_per_sec) ? `, ${fmtNum(sc.patches_per_sec)} patches/s` : "") : "";
     const tip = `${m.label} (${FAMILIES[m.family]}${m.params ? ", " + m.params : ""})\n${metric.title}: ${metric.fmt(v)}, rank ${i + 1} of ${rows.length}${extra}${m.note ? "\n" + m.note : ""}`;
     return `<div class="row${i === 0 ? " top" : ""}" tabindex="0" title="${esc(tip)}">
       <span class="name">${esc(m.label)} <span class="fam">${esc(FAMILIES[m.family])}</span></span>
@@ -314,11 +326,70 @@ function costModels() {
   }));
 }
 
+let MODE = "live";
+
+// Precomputed view: the task's precomputed sources on the same accuracy metrics, with the
+// best live model as a reference line. No speed, since nothing is run.
+function renderPrecomputed(taskId) {
+  const charts = document.getElementById("charts"), winners = document.getElementById("winners"), table = document.getElementById("table");
+  const details = document.getElementById("all-numbers");
+  const withPre = DATA.tasks.filter(t => t.precomputed.length);
+  if (taskId === "overall") {
+    document.getElementById("task-what").textContent = "Precomputed sources, by task. Pick a task to see its scores.";
+    document.getElementById("conditions").textContent = "";
+    document.getElementById("credit").textContent = "AlphaEarth Foundations Satellite Embedding dataset: produced by Google and Google DeepMind, CC-BY 4.0.";
+    winners.innerHTML = withPre.map(t => {
+      const best = [...t.precomputed].sort((a, b) => b.scores.linear_f1 - a.scores.linear_f1)[0];
+      return `<li>${esc(t.title)}: <b>${esc(best.label)}</b>, linear F1 ${best.scores.linear_f1.toFixed(3)}.</li>`;
+    }).join("") || "";
+    const pending = DATA.tasks.filter(t => !t.precomputed.length).map(t => t.title);
+    charts.innerHTML = withPre.length
+      ? (pending.length ? `<p class="empty">No precomputed results yet for: ${esc(pending.join(", "))}.</p>` : "")
+      : `<p class="empty">No precomputed results yet. Run <code>uv run main.py precompute</code>, then <code>uv run main.py report</code>.</p>`;
+    details.hidden = true;
+    return;
+  }
+  const task = DATA.tasks.find(t => t.id === taskId);
+  document.getElementById("task-what").textContent = task.what;
+  document.getElementById("credit").textContent = task.credit + (task.precomputed.length ? " AlphaEarth: Google and Google DeepMind, CC-BY 4.0." : "");
+  if (!task.precomputed.length) {
+    document.getElementById("conditions").textContent = "";
+    winners.innerHTML = "";
+    charts.innerHTML = `<p class="empty">No precomputed results for ${esc(task.title.toLowerCase())}.${task.id === "landslides" ? " Its imagery has no coordinates, so embeddings cannot be looked up." : ""}</p>`;
+    details.hidden = true;
+    return;
+  }
+  const pre = task.precomputed;
+  const any = pre[0].scores;
+  document.getElementById("conditions").textContent =
+    `${pre.length} source${pre.length > 1 ? "s" : ""}. ${any.n_train.toLocaleString()} training and ${any.n_test.toLocaleString()} test patches, the same ones as the live models.`;
+  const metrics = METRICS.filter(m => pre.some(x => Number.isFinite(x.scores[m.key]))).map(m => worded(m, task));
+  // Best live model per metric, as context.
+  const liveBest = m => task.models.length ? ranked(task.models.filter(x => x.family !== "normal"), m)[0] : null;
+  charts.innerHTML = metrics.map(m => {
+    const lb = liveBest(m);
+    const ref = lb ? { ...lb, label: `${lb.label} (best live)`, family: lb.family } : null;
+    return chart(ref ? [...pre, ref] : pre, m);
+  }).join("");
+  const best = [...pre].sort((a, b) => b.scores.linear_f1 - a.scores.linear_f1)[0];
+  const lb = liveBest(METRICS[0]);
+  winners.innerHTML = [
+    `Best precomputed: <b>${esc(best.label)}</b>, linear F1 ${best.scores.linear_f1.toFixed(3)} from ${fmtBytes(best.scores.bytes_per_embedding)}.`,
+    lb ? `Best live model: <b>${esc(lb.label)}</b>, linear F1 ${lb.scores.linear_f1.toFixed(3)}.` : `Live models have not finished this task yet.`,
+  ].map(s => `<li>${s}</li>`).join("");
+  const cols = [["Source", m => esc(m.label)], ...metrics.map(x => [x.title, m => Number.isFinite(m.scores[x.key]) ? esc(x.fmt(m.scores[x.key])) : "\u2013"]),
+    ["Size", m => fmtBytes(m.scores.bytes_per_embedding)], ["Dim", m => m.scores.dim]];
+  table.innerHTML = `<thead><tr>${cols.map(c => `<th>${esc(c[0])}</th>`).join("")}</tr></thead><tbody>` +
+    pre.map(m => `<tr>${cols.map(c => `<td>${c[1](m)}</td>`).join("")}</tr>`).join("") + "</tbody>";
+  details.hidden = false;
+}
+
 function render(taskId) {
+  for (const b of document.querySelectorAll("nav.tasks button")) b.setAttribute("aria-selected", String(b.dataset.task === taskId));
+  if (MODE === "precomputed") return renderPrecomputed(taskId);
   const isOverall = taskId === "overall";
   const task = DATA.tasks.find(t => t.id === taskId);
   const done = DATA.tasks.filter(t => t.models.length);
-  for (const b of document.querySelectorAll("nav.tasks button")) b.setAttribute("aria-selected", String(b.dataset.task === taskId));
 
   const charts = document.getElementById("charts"), winners = document.getElementById("winners"), table = document.getElementById("table");
   const details = document.getElementById("all-numbers");
@@ -406,7 +477,26 @@ nav.innerHTML = tabs.map(t => {
 const fromHash = () => { const h = location.hash.slice(1); return tabs.some(t => t.id === h) ? h : "overall"; };
 nav.addEventListener("click", e => { const b = e.target.closest("button[data-task]"); if (b) { history.replaceState(null, "", "#" + b.dataset.task); render(b.dataset.task); } });
 window.addEventListener("hashchange", () => render(fromHash()));
-render(fromHash());
+
+const modeNav = document.getElementById("mode");
+function setMode(m) {
+  MODE = m;
+  for (const b of modeNav.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === m));
+  document.getElementById("mode-note").hidden = m !== "precomputed";
+  // Pending markers follow the mode: a task is pending if it has no results of that kind.
+  for (const b of nav.querySelectorAll("button[data-task]")) {
+    const t = DATA.tasks.find(x => x.id === b.dataset.task);
+    if (!t) continue;
+    const empty = m === "precomputed" ? !t.precomputed.length : !t.models.length;
+    b.textContent = t.title + (empty ? " (pending)" : "");
+  }
+  try { localStorage.setItem("mode", m); } catch (e) {}
+  render(fromHash());
+}
+modeNav.addEventListener("click", e => { const b = e.target.closest("button[data-mode]"); if (b && b.dataset.mode !== MODE) setMode(b.dataset.mode); });
+let savedMode = "live";
+try { savedMode = localStorage.getItem("mode") === "precomputed" ? "precomputed" : "live"; } catch (e) {}
+setMode(savedMode);
 
 // Scatter tooltip.
 const tipEl = document.getElementById("tip");

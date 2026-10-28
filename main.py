@@ -48,6 +48,11 @@ MODEL_INFO = {
 }
 
 
+# Precomputed sources: label, family tag, note. Results live in results/precomputed/<task>/<source>.json.
+PRECOMPUTED_INFO = {
+    "alphaearth": ("AlphaEarth", "precomputed", "Google / Google DeepMind. Annual 2022 embedding from many sensors, 64 dims per 10 m pixel, averaged per patch. Read from the unofficial TGE Labs copy."),
+}
+
 # Leaderboard text per task. `words` fills the metric descriptions.
 TASK_INFO = {
     "burn_scars": {
@@ -95,13 +100,19 @@ def report():
             f"{len(models)} models. {any_run.get('n_train', 0):,} training and {any_run.get('n_test', 0):,} test patches "
             f"of 64\u00d764 px, fixed random sample. Speed on {device}, batch 64."
         ) if models else ""
-        out.append({"id": task_id, **TASK_INFO[task_id], "conditions": conditions, "models": models})
+        pre = []
+        for p in sorted((RESULTS / "precomputed" / task_id).glob("*.json")):
+            if p.stem in PRECOMPUTED_INFO:
+                label, family, note = PRECOMPUTED_INFO[p.stem]
+                pre.append({"id": p.stem, "label": label, "family": family, "params": "", "note": note, "scores": json.loads(p.read_text())})
+        out.append({"id": task_id, **TASK_INFO[task_id], "conditions": conditions, "models": models, "precomputed": pre})
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     data = json.dumps({"tasks": out, "generated": generated}).replace("</", "<\\/")
     template = (Path(__file__).parent / "scorchedearth" / "leaderboard.html").read_text()
     Path("index.html").write_text(template.replace("__DATA__", data))
     summary = ", ".join(f"{t['id']} {len(t['models'])}" for t in out)
-    print(f"Wrote index.html ({summary} models)")
+    pre = sum(len(t["precomputed"]) for t in out)
+    print(f"Wrote index.html ({summary} models; {pre} precomputed)")
 
 
 def torch_device() -> str:
