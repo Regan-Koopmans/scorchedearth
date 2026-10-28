@@ -1,0 +1,189 @@
+<title>ScorchedEarth</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: raw document. One column of sections, one bar chart per metric, plain rules between them. */
+:root {
+  color-scheme: light;
+  --paper: #ffffff;
+  --ink: #000000;
+  --grey: #666666;
+  --rule: #000000;
+  --win: #0000ee;
+  --f-text: "Times New Roman", Times, serif;
+  --f-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font: 17px/1.4 var(--f-text);
+  padding-block: 24px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 860px; }
+h1 { font: bold 2.4rem/1 var(--f-text); margin: 0 0 6px; }
+h2 { font: bold 1.25rem/1.2 var(--f-text); margin: 0; }
+p { margin: 0 0 6px; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }
+a { color: var(--win); }
+.meta { font: 13px/1.5 var(--f-mono); color: var(--grey); }
+ul.winners { margin: 8px 0 0; padding-left: 20px; }
+ul.winners li { margin: 2px 0; }
+
+section { display: grid; gap: 6px; }
+.what { color: var(--grey); }
+.chart { margin-top: 8px; font: 13px/1 var(--f-mono); }
+.row {
+  display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) 5.5rem;
+  align-items: center; gap: 10px; padding: 1px 0;
+}
+.row:focus-visible { outline: 2px solid var(--win); outline-offset: 1px; }
+.row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .fam { color: var(--grey); }
+.row .track { height: 14px; border-left: 1px solid var(--ink); position: relative; }
+.row .bar { position: absolute; top: 0; bottom: 0; left: 0; background: var(--ink); }
+.row .val { text-align: right; font-variant-numeric: tabular-nums; }
+.row.top .name, .row.top .val { font-weight: bold; color: var(--win); }
+.row.top .bar { background: var(--win); }
+.axis { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) 5.5rem; gap: 10px; margin-top: 4px; color: var(--grey); }
+.axis .ticks { position: relative; height: 16px; border-top: 1px solid var(--ink); }
+.axis .ticks span { position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
+.axis .ticks span:first-child { transform: none; }
+.axis .ticks span:last-child { transform: translateX(-100%); }
+.axis .note { text-align: right; padding-top: 3px; }
+
+summary { cursor: pointer; font-weight: bold; }
+summary:focus-visible { outline: 2px solid var(--win); }
+.tablewrap { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; font: 13px/1.3 var(--f-mono); font-variant-numeric: tabular-nums; }
+th, td { border: 1px solid var(--ink); padding: 3px 8px; text-align: right; white-space: nowrap; }
+th { font-weight: bold; text-align: left; }
+td:first-child, td:nth-child(2) { text-align: left; }
+
+@media (max-width: 560px) {
+  .row, .axis { grid-template-columns: minmax(0, 7.5rem) minmax(0, 1fr) 4.2rem; gap: 6px; }
+  .row .fam { display: none; }
+}
+</style>
+
+<main>
+  <h1>ScorchedEarth</h1>
+  <p>Geospatial embedding benchmark on HLS burn scars.</p>
+  <p class="meta" id="conditions"></p>
+  <ul class="winners" id="winners"></ul>
+
+  <div id="charts"></div>
+
+  <hr>
+  <details>
+    <summary>All numbers</summary>
+    <div class="tablewrap"><table id="table"></table></div>
+  </details>
+
+  <hr>
+  <p class="meta">Data: HLS Burn Scars (IBM / NASA, CC-BY-4.0). 804 scenes, 512&times;512, six bands, 2018&ndash;2021, contiguous US.<br>
+  Frozen embeddings. Probes trained on the training split, scored on validation. Blue marks the winner of each metric.</p>
+</main>
+
+<script>
+const DATA = {"models": [{"id": "band_stats", "label": "Band stats", "family": "normal", "params": "", "note": "Per-band mean and std.", "scores": {"linear_f1": 0.6214775323686215, "linear_auc": 0.9625085046746158, "knn_f1": 0.5844504021447721, "fraction_r2": 0.4522528648376465, "retrieval_p@10": 0.5616977225672878, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 12, "bytes_per_embedding": 48, "patches_per_sec": 63418.5, "ms_per_patch": 0.016}}, {"id": "copernicus_fm", "label": "Copernicus-FM", "family": "magic", "params": "ViT-B", "note": "Wavelength and bandwidth hypernetwork.", "scores": {"linear_f1": 0.7316636851520573, "linear_auc": 0.9630348281671071, "knn_f1": 0.7063020214030915, "fraction_r2": 0.5991895198822021, "retrieval_p@10": 0.6935817805383023, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 124.7, "ms_per_patch": 8.018}}, {"id": "croma_base", "label": "CROMA", "family": "rare", "params": "ViT-B", "note": "12-band S2 optical encoder.", "scores": {"linear_f1": 0.7860508953817154, "linear_auc": 0.9775739282796522, "knn_f1": 0.7883369330453563, "fraction_r2": 0.7271448373794556, "retrieval_p@10": 0.7250517598343685, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 87.7, "ms_per_patch": 11.401}}, {"id": "dinov3_vitb16_web", "label": "DINOv3 ViT-B (web)", "family": "set", "params": "ViT-B", "note": "RGB only. Natural images.", "scores": {"linear_f1": 0.4393063583815029, "linear_auc": 0.8750750081340903, "knn_f1": 0.2164048865619546, "fraction_r2": 0.296578049659729, "retrieval_p@10": 0.32401656314699795, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 104.6, "ms_per_patch": 9.558}}, {"id": "dinov3_vitl16_sat", "label": "DINOv3 ViT-L (sat)", "family": "set", "params": "ViT-L", "note": "RGB only. 493M satellite images.", "scores": {"linear_f1": 0.5518341307814992, "linear_auc": 0.9103448741720961, "knn_f1": 0.25177304964539005, "fraction_r2": 0.399383544921875, "retrieval_p@10": 0.3701863354037267, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 1024, "bytes_per_embedding": 4096, "patches_per_sec": 31.6, "ms_per_patch": 31.604}}, {"id": "dofa_base", "label": "DOFA", "family": "magic", "params": "ViT-B", "note": "Wavelength-conditioned patch embedding.", "scores": {"linear_f1": 0.6821305841924399, "linear_auc": 0.9546048333196357, "knn_f1": 0.4992389649923896, "fraction_r2": 0.556988000869751, "retrieval_p@10": 0.4463768115942029, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 42.9, "ms_per_patch": 23.295}}, {"id": "olmoearth_base", "label": "OlmoEarth", "family": "magic", "params": "Base", "note": "Missing S2 bands filled per its v1 rule.", "scores": {"linear_f1": 0.7432808155699722, "linear_auc": 0.9715700877130767, "knn_f1": 0.7552941176470588, "fraction_r2": 0.719413161277771, "retrieval_p@10": 0.7393374741200828, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 118.4, "ms_per_patch": 8.444}}, {"id": "panopticon", "label": "Panopticon", "family": "magic", "params": "ViT-B", "note": "Channel attention over any band set.", "scores": {"linear_f1": 0.7105500450856628, "linear_auc": 0.9632134591706193, "knn_f1": 0.7456037514654161, "fraction_r2": 0.6915203332901001, "retrieval_p@10": 0.6859213250517598, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 24.7, "ms_per_patch": 40.456}}, {"id": "prithvi_eo2_300m", "label": "Prithvi-EO 2.0 300M", "family": "unique", "params": "300M", "note": "Pretrained on HLS, same six bands.", "scores": {"linear_f1": 0.7692307692307693, "linear_auc": 0.9761133571332875, "knn_f1": 0.7159235668789808, "fraction_r2": 0.7174264192581177, "retrieval_p@10": 0.7120082815734989, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 1024, "bytes_per_embedding": 4096, "patches_per_sec": 39.9, "ms_per_patch": 25.066}}, {"id": "prithvi_eo2_600m", "label": "Prithvi-EO 2.0 600M", "family": "unique", "params": "600M", "note": "Pretrained on HLS, same six bands.", "scores": {"linear_f1": 0.7689393939393939, "linear_auc": 0.9794009556758687, "knn_f1": 0.7472256473489519, "fraction_r2": 0.7217113971710205, "retrieval_p@10": 0.75175983436853, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 1280, "bytes_per_embedding": 5120, "patches_per_sec": 8.1, "ms_per_patch": 123.322}}, {"id": "random_projection", "label": "Random projection", "family": "normal", "params": "", "note": "Sanity floor.", "scores": {"linear_f1": 0.6243305279265493, "linear_auc": 0.9575601256571538, "knn_f1": 0.5396825396825397, "fraction_r2": 0.42290619913149463, "retrieval_p@10": 0.5625258799171843, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 256, "bytes_per_embedding": 1024, "patches_per_sec": 34803.8, "ms_per_patch": 0.029}}, {"id": "satlas_swinb_s2", "label": "Satlas Swin-B", "family": "rare", "params": "Swin-B", "note": "9-band S2.", "scores": {"linear_f1": 0.7355450236966825, "linear_auc": 0.9652810379812296, "knn_f1": 0.6515353805073432, "fraction_r2": 0.6730940937995911, "retrieval_p@10": 0.6066252587991718, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 1024, "bytes_per_embedding": 4096, "patches_per_sec": 57.6, "ms_per_patch": 17.373}}, {"id": "softcon_vitb14", "label": "SoftCon ViT-B", "family": "rare", "params": "ViT-B", "note": "13-band S2. Missing bands copied from nearest.", "scores": {"linear_f1": 0.6376582278481012, "linear_auc": 0.9589895489604688, "knn_f1": 0.6780905752753978, "fraction_r2": 0.4835922122001648, "retrieval_p@10": 0.631055900621118, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 76.3, "ms_per_patch": 13.098}}, {"id": "spectral_indices", "label": "NDVI + NBR", "family": "normal", "params": "", "note": "Burn and vegetation indices plus band means.", "scores": {"linear_f1": 0.6787401574803149, "linear_auc": 0.9676415190990693, "knn_f1": 0.6666666666666666, "fraction_r2": 0.5148153901100159, "retrieval_p@10": 0.6213250517598343, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 10, "bytes_per_embedding": 40, "patches_per_sec": 48117.5, "ms_per_patch": 0.021}}, {"id": "ssl4eo_dino_vits16", "label": "SSL4EO DINO ViT-S", "family": "rare", "params": "ViT-S", "note": "13-band S2. Missing bands copied from nearest.", "scores": {"linear_f1": 0.7247863247863248, "linear_auc": 0.9721861019825413, "knn_f1": 0.7508854781582054, "fraction_r2": 0.6617697477340698, "retrieval_p@10": 0.7072463768115942, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 384, "bytes_per_embedding": 1536, "patches_per_sec": 296.2, "ms_per_patch": 3.377}}, {"id": "ssl4eo_mae_vitb16", "label": "SSL4EO MAE ViT-B", "family": "rare", "params": "ViT-B", "note": "13-band S2. Missing bands copied from nearest.", "scores": {"linear_f1": 0.7560756075607561, "linear_auc": 0.9690846399478217, "knn_f1": 0.7175208581644815, "fraction_r2": 0.7082421779632568, "retrieval_p@10": 0.7221532091097308, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 768, "bytes_per_embedding": 3072, "patches_per_sec": 102.5, "ms_per_patch": 9.758}}, {"id": "ssl4eo_moco_resnet50", "label": "SSL4EO MoCo R50", "family": "rare", "params": "ResNet-50", "note": "13-band S2. Missing bands copied from nearest.", "scores": {"linear_f1": 0.6128739800543971, "linear_auc": 0.9112982608620599, "knn_f1": 0.5571847507331378, "fraction_r2": 0.5762414932250977, "retrieval_p@10": 0.5867494824016564, "n_train": 12000, "n_test": 6000, "test_pos_rate": 0.0805, "dim": 2048, "bytes_per_embedding": 8192, "patches_per_sec": 306.3, "ms_per_patch": 3.265}}], "conditions": "17 models. 12,000 training and 6,000 test patches of 64\u00d764 px, fixed random sample. Speed on arm64 Apple GPU (MPS), batch 64."};
+
+const FAMILIES = {
+  normal: "baseline",
+  unique: "HLS",
+  magic: "any-sensor",
+  rare: "S2",
+  set: "RGB",
+};
+
+const METRICS = [
+  { key: "linear_f1", title: "Linear F1", what: "Logistic probe. Is the patch more than half burned?", fmt: v => v.toFixed(3) },
+  { key: "knn_f1", title: "kNN F1", what: "20 nearest neighbours vote on the same label. No training.", fmt: v => v.toFixed(3) },
+  { key: "fraction_r2", title: "Burned fraction R²", what: "Ridge probe. How much of the patch burned?", fmt: v => v.toFixed(3) },
+  { key: "retrieval_p@10", title: "Retrieval P@10", what: "Of the 10 nearest patches to a burned patch, the share that are burned.", fmt: v => v.toFixed(3) },
+  { key: "linear_auc", title: "Linear AUC", what: "Ranking quality of the logistic probe. Every model scores high here.", fmt: v => v.toFixed(3) },
+  { key: "patches_per_sec", title: "Inference speed", what: "Patches embedded per second. Log scale.", fmt: v => fmtNum(v) + "/s", log: true },
+  { key: "bytes_per_embedding", title: "Embedding size", what: "Bytes per patch at float32. Smaller is better. Log scale.", fmt: v => fmtBytes(v), log: true, lowerBetter: true },
+];
+
+function fmtNum(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + "k" : v >= 100 ? v.toFixed(0) : v.toFixed(1); }
+function fmtBytes(v) { return v >= 1024 ? (v / 1024).toFixed(v % 1024 ? 1 : 0) + " KB" : v + " B"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+const models = DATA.models;
+document.getElementById("conditions").textContent = DATA.conditions;
+
+function ranked(metric) {
+  const rows = models.filter(m => Number.isFinite(m.scores[metric.key]));
+  return rows.sort((a, b) => metric.lowerBetter ? a.scores[metric.key] - b.scores[metric.key] : b.scores[metric.key] - a.scores[metric.key]);
+}
+
+function niceTicks(lo, hi, n = 5) {
+  const span = hi - lo, raw = span / n, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map(s => s * mag).find(s => span / s <= n) || mag * 10;
+  const ticks = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step) ticks.push(+t.toFixed(10));
+  return ticks;
+}
+
+function scaleFor(metric, rows) {
+  const vals = rows.map(m => m.scores[metric.key]);
+  if (metric.log) {
+    const lo = 10 ** Math.floor(Math.log10(Math.min(...vals))), hi = 10 ** Math.ceil(Math.log10(Math.max(...vals)));
+    const L = Math.log10(lo), H = Math.log10(hi);
+    const ticks = []; for (let p = L; p <= H; p++) ticks.push(10 ** p);
+    return { pos: v => (Math.log10(v) - L) / (H - L), ticks, zero: 0, fmtTick: metric.key === "bytes_per_embedding" ? fmtBytes : fmtNum };
+  }
+  const lo = Math.min(0, ...vals), hiRaw = Math.max(...vals);
+  const hi = hiRaw <= 1 && lo >= 0 ? 1 : niceTicks(lo, hiRaw).at(-1) < hiRaw ? hiRaw : niceTicks(lo, hiRaw).at(-1);
+  const pos = v => (v - lo) / (hi - lo);
+  return { pos, ticks: niceTicks(lo, hi, 4), zero: pos(0), fmtTick: v => (Math.abs(v) < 1e-9 ? "0" : v.toFixed(v % 1 ? (String(v).split(".")[1] || "").length : 0)) };
+}
+
+function chart(metric) {
+  const rows = ranked(metric);
+  const s = scaleFor(metric, rows);
+  const bars = rows.map((m, i) => {
+    const v = m.scores[metric.key], sc = m.scores;
+    const a = metric.log ? 0 : Math.min(s.zero, s.pos(v)), b = metric.log ? s.pos(v) : Math.max(s.zero, s.pos(v));
+    const tip = `${m.label} (${FAMILIES[m.family]}${m.params ? ", " + m.params : ""})\n${metric.title}: ${metric.fmt(v)}, rank ${i + 1} of ${rows.length}\n${sc.dim} dims, ${fmtNum(sc.patches_per_sec)} patches/s${m.note ? "\n" + m.note : ""}`;
+    return `<div class="row${i === 0 ? " top" : ""}" tabindex="0" title="${esc(tip)}">
+      <span class="name">${esc(m.label)} <span class="fam">${esc(FAMILIES[m.family])}</span></span>
+      <span class="track"><span class="bar" style="left:${(a * 100).toFixed(2)}%;width:${Math.max(0.5, (b - a) * 100).toFixed(2)}%"></span></span>
+      <span class="val">${esc(metric.fmt(v))}</span>
+    </div>`;
+  }).join("");
+  const ticks = s.ticks.map(t => `<span style="left:${(s.pos(t) * 100).toFixed(2)}%">${esc(s.fmtTick(t))}</span>`).join("");
+  return `<hr><section>
+    <h2>${esc(metric.title)}</h2>
+    <p class="what">${esc(metric.what)}</p>
+    <div class="chart" role="list">${bars}
+      <div class="axis" aria-hidden="true"><span class="note">${metric.lowerBetter ? "smaller wins" : "bigger wins"}</span><span class="ticks">${ticks}</span><span></span></div>
+    </div>
+  </section>`;
+}
+
+document.getElementById("charts").innerHTML = METRICS.map(chart).join("");
+
+// Winners, summary before detail.
+const deep = models.filter(m => m.family !== "normal");
+const by = (list, key) => [...list].sort((a, b) => b.scores[key] - a.scores[key])[0];
+const accKeys = ["linear_f1", "knn_f1", "fraction_r2", "retrieval_p@10"];
+const meanRank = m => accKeys.reduce((s, k) => s + ranked(METRICS.find(x => x.key === k)).indexOf(m) + 1, 0) / accKeys.length;
+const overall = [...models].sort((a, b) => meanRank(a) - meanRank(b))[0];
+const bestBase = by(models.filter(m => m.family === "normal"), "linear_f1");
+const fast = by(deep, "patches_per_sec");
+document.getElementById("winners").innerHTML = [
+  `Best overall: <b>${esc(overall.label)}</b>, mean rank ${meanRank(overall).toFixed(1)} across 4 accuracy tests.`,
+  `Best linear F1: <b>${esc(by(models, "linear_f1").label)}</b>, ${by(models, "linear_f1").scores.linear_f1.toFixed(3)}.`,
+  `Fastest foundation model: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s.`,
+  `Baseline to beat: <b>${esc(bestBase.label)}</b>, linear F1 ${bestBase.scores.linear_f1.toFixed(3)} in ${fmtBytes(bestBase.scores.bytes_per_embedding)}.`,
+].map(s => `<li>${s}</li>`).join("");
+
+// Full table.
+const cols = [["Model", m => esc(m.label)], ["Family", m => FAMILIES[m.family]], ...METRICS.map(x => [x.title, m => esc(x.fmt(m.scores[x.key]))]), ["Dim", m => m.scores.dim]];
+document.getElementById("table").innerHTML =
+  `<thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>` +
+  [...models].sort((a, b) => meanRank(a) - meanRank(b)).map(m => `<tr>${cols.map(c => `<td>${c[1](m)}</td>`).join("")}</tr>`).join("") + "</tbody>";
+</script>

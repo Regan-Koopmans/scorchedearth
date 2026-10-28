@@ -1,0 +1,17 @@
+[project]
+name = "scorchedearth"
+version = "0.1.0"
+description = "ScorchedEarth: a benchmark for geospatial embeddings on HLS burn scar imagery"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "einops>=0.8.2",
+    "huggingface-hub>=2.3.0",
+    "numpy>=2.5.4",
+    "olmoearth-pretrain-minimal>=0.1.5",
+    "scikit-learn>=1.9.1",
+    "tifffile>=2026.10.15",
+    "timm>=1.0.30",
+    "torch>=2.14.1",
+    "torchgeo>=0.10.1",
+]
