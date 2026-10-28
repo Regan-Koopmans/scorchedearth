@@ -128,7 +128,7 @@ const METRICS = [
   { key: "retrieval_p@10", title: "Retrieval P@10", what: "Search with a {posPatch}: the share of the 10 nearest that are also {posPatch}es.", fmt: v => v.toFixed(3) },
   { key: "linear_auc", title: "Linear AUC", what: "How often the logistic probe ranks a {posPatch} above {negPatch}. 0.5 is chance, 1 is perfect.", fmt: v => v.toFixed(3) },
   { key: "linear_acc", title: "Linear accuracy", what: "Share of patches the logistic probe labels correctly.", fmt: v => v.toFixed(3) },
-  { key: "patches_per_sec", title: "Inference speed", what: "Patches embedded per second. Log scale.", fmt: v => fmtNum(v) + "/s", log: true },
+  { key: "patches_per_sec", title: "Inference speed", what: "Patches embedded per second. Log scale. Foundation models only.", fmt: v => fmtNum(v) + "/s", log: true, learnedOnly: true },
   { key: "bytes_per_embedding", title: "Embedding size", what: "Bytes per patch at float32. Smaller is better. Log scale. Foundation models only.", fmt: v => fmtBytes(v), log: true, lowerBetter: true, learnedOnly: true },
 ];
 const ACCURACY = ["linear_f1", "knn_f1", "fraction_r2", "retrieval_p@10", "linear_acc"];
