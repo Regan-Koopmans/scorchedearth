@@ -46,14 +46,19 @@ def download() -> Path:
     return DATA_DIR
 
 
-def load_split(split: str, limit: int | None = None):
+def chip_paths(split: str, limit: int | None = None) -> list[tuple[Path, Path]]:
+    """Image and mask path for each chip, in load order."""
     d = DATA_DIR / f"{split}_chips"
     # The training archive carries macOS "._" sidecar files beside every chip; skip them.
     imgs = [p for p in sorted(d.glob("*_merged.tif")) if not p.name.startswith(".")]
     pairs = [(p, d / p.name.replace("_merged.tif", ".mask.tif")) for p in imgs]
-    pairs = [(i, m) for i, m in pairs if m.exists()][:limit]  # tolerate partial downloads
+    return [(i, m) for i, m in pairs if m.exists()][:limit]  # tolerate partial downloads
+
+
+def load_split(split: str, limit: int | None = None):
+    pairs = chip_paths(split, limit)
     if not pairs:
-        raise FileNotFoundError(f"No crop chips in {d}. Run `download` first.")
+        raise FileNotFoundError(f"No crop chips in {DATA_DIR / f'{split}_chips'}. Run `download` first.")
     scenes, masks = [], []
     for img, mask in pairs:
         a = tifffile.imread(img)  # H, W, 18
@@ -61,6 +66,30 @@ def load_split(split: str, limit: int | None = None):
         scenes.append(a[DATE * 6 : DATE * 6 + 6])
         masks.append(tifffile.imread(mask).astype(np.int16))
     return np.stack(scenes), np.stack(masks)
+
+
+YEAR = 2022
+
+
+def patch_footprints(split: str, limit: int | None = None):
+    """Footprint and label of every kept patch, in the same order as load(). Each footprint
+    is (crs, west, south, east, north) in the chip's own CRS, for precomputed lookups."""
+    import rasterio
+
+    from ..tasks import PATCH, majority
+
+    feet, labels = [], []
+    for img, mask in chip_paths(split, limit):
+        keep, lab = majority(tifffile.imread(mask).astype(np.int16)[None], min_share=MIN_SHARE)
+        with rasterio.open(img) as r:
+            crs, t = r.crs, r.transform
+        g = r.height // PATCH
+        for k in np.flatnonzero(keep):
+            i, j = divmod(int(k), g)  # grid() orders tiles row by row
+            w, n = t.c + j * PATCH * t.a, t.f + i * PATCH * t.e
+            feet.append((crs, w, n + PATCH * t.e, w + PATCH * t.a, n))
+            labels.append(int(lab[k]))
+    return feet, np.array(labels)
 
 
 def load(limit: int | None = None) -> TaskData:

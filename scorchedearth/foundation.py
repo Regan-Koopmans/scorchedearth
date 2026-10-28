@@ -40,15 +40,35 @@ class Adapter:
     def forward(self, x: torch.Tensor, bands: Bands) -> torch.Tensor:
         raise NotImplementedError
 
-    def __call__(self, x: np.ndarray, bands: Bands) -> np.ndarray:
+    def grid(self, x: torch.Tensor, bands: Bands) -> torch.Tensor:
+        """Spatial features (N, D, h, w) before pooling, for pixel-level probes. Optional."""
+        raise NotImplementedError(f"{self.name} has no pixel-level features yet")
+
+    def _prepare(self, x: np.ndarray) -> torch.Tensor:
         if self.model is None:
             self.load()
             self.model = self.model.eval().to(DEVICE)
+        t = torch.from_numpy(x).to(DEVICE)
+        if self.size and t.shape[-1] != self.size:
+            t = F.interpolate(t, size=self.size, mode="bilinear", align_corners=False)
+        return t
+
+    def __call__(self, x: np.ndarray, bands: Bands) -> np.ndarray:
         with torch.inference_mode():
-            t = torch.from_numpy(x).to(DEVICE)
-            if self.size and t.shape[-1] != self.size:
-                t = F.interpolate(t, size=self.size, mode="bilinear", align_corners=False)
-            return self.forward(t, bands).float().cpu().numpy()
+            return self.forward(self._prepare(x), bands).float().cpu().numpy()
+
+    def features(self, x: np.ndarray, bands: Bands) -> np.ndarray:
+        """Pixel-level path: (N, D, h, w) float16 feature grids."""
+        with torch.inference_mode():
+            return self.grid(self._prepare(x), bands).half().cpu().numpy()
+
+
+def tokens_to_grid(tokens: torch.Tensor, prefix: int = 1) -> torch.Tensor:
+    """ViT tokens (N, prefix + h*w, D) -> (N, D, h, w), dropping prefix tokens."""
+    t = tokens[:, prefix:]
+    n, hw, d = t.shape
+    h = int(round(hw ** 0.5))
+    return t.transpose(1, 2).reshape(n, d, h, h)
 
 
 def stats(bands: Bands, idx: list[int] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -97,10 +117,15 @@ class _Prithvi(Adapter):
         self.mean = torch.tensor(cfg["mean"], device=DEVICE).view(1, -1, 1, 1) / 10000
         self.std = torch.tensor(cfg["std"], device=DEVICE).view(1, -1, 1, 1) / 10000
 
-    def forward(self, x, bands):
+    def _tokens(self, x, bands):
         x = x[:, bands.nearest(HLS)]
-        tokens = self.model.forward_features((x - self.mean) / self.std)[-1]
-        return tokens[:, 1:].mean(dim=1)
+        return self.model.forward_features((x - self.mean) / self.std)[-1]
+
+    def forward(self, x, bands):
+        return self._tokens(x, bands)[:, 1:].mean(dim=1)
+
+    def grid(self, x, bands):
+        return tokens_to_grid(self._tokens(x, bands))
 
 
 @register
@@ -210,7 +235,7 @@ class OlmoEarth(Adapter):
         # B02 B03 B04 B08 B05 B06 B07 B8A B11 B12 B01 B09, as canonical bands.
         self.order = [S2_BY_NAME[b.replace("B0", "B")] for b in self.modality.band_order]
 
-    def forward(self, x, bands):
+    def _encode(self, x, bands):
         from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.datatypes import MaskedOlmoEarthSample
 
         b, _, h, w = x.shape
@@ -228,7 +253,13 @@ class OlmoEarth(Adapter):
             sentinel2_l2a_mask=torch.zeros(b, h, w, 1, 3, dtype=torch.long, device=DEVICE),
         )
         tm = self.model.encoder(sample, patch_size=8, input_res=30, fast_pass=True)["tokens_and_masks"]
-        return tm.sentinel2_l2a.mean(dim=(1, 2, 3, 4))
+        return tm.sentinel2_l2a  # (B, h, w, T, groups, D)
+
+    def forward(self, x, bands):
+        return self._encode(x, bands).mean(dim=(1, 2, 3, 4))
+
+    def grid(self, x, bands):
+        return self._encode(x, bands).mean(dim=(3, 4)).permute(0, 3, 1, 2)
 
 
 @register
@@ -265,6 +296,12 @@ class _SSL4EO(Adapter):
     def forward(self, x, bands):
         x = x[:, bands.nearest(S2_13)] * 10000
         return _timm_pool(self.model, self.norm(x))
+
+    def grid(self, x, bands):
+        f = self.model.forward_features(self.norm(x[:, bands.nearest(S2_13)] * 10000))
+        if f.ndim == 4:  # ResNet: already (N, D, h, w)
+            return f
+        return tokens_to_grid(f, getattr(self.model, "num_prefix_tokens", 1))
 
 
 @register
@@ -313,13 +350,18 @@ class CROMA(Adapter):
 
         self.model = tg.croma_base(tg.CROMABase_Weights.CROMA_VIT, modalities=["optical"])
 
-    def forward(self, x, bands):
+    def _encode(self, x, bands):
         idx = bands.nearest([b for name, b in S2_BY_NAME.items() if name != "B10"])
         # CROMA scales each band from mean - 2 std .. mean + 2 std to [0, 1], using dataset stats.
         mean, std = stats(bands, idx)
         lo, hi = mean - 2 * std, mean + 2 * std
-        x = ((x[:, idx] - lo) / (hi - lo)).clamp(0, 1)
-        return self.model(x_optical=x)["optical_GAP"]
+        return self.model(x_optical=((x[:, idx] - lo) / (hi - lo)).clamp(0, 1))
+
+    def forward(self, x, bands):
+        return self._encode(x, bands)["optical_GAP"]
+
+    def grid(self, x, bands):
+        return tokens_to_grid(self._encode(x, bands)["optical_encodings"], prefix=0)
 
 
 @register

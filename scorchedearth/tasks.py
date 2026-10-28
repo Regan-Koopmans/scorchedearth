@@ -60,7 +60,13 @@ def patchify(scenes: np.ndarray, masks: np.ndarray, size: int = PATCH, positive:
 def patchify_majority(scenes: np.ndarray, masks: np.ndarray, size: int = PATCH, nodata: int = 0, min_share: float = 0.5):
     """Multiclass tasks. Returns patches and their majority class, keeping patches where
     that class covers at least `min_share` of valid pixels."""
-    x, m = grid(scenes, size), grid(masks, size).reshape(-1, size * size)
+    keep, label = majority(masks, size, nodata, min_share)
+    return grid(scenes, size)[keep], label[keep]
+
+
+def majority(masks: np.ndarray, size: int = PATCH, nodata: int = 0, min_share: float = 0.5):
+    """Per tile of grid(masks): whether it is kept, and its majority class (-1 if not)."""
+    m = grid(masks, size).reshape(-1, size * size)
     keep, label = [], []
     for row in m:
         v = row[row != nodata]
@@ -71,8 +77,7 @@ def patchify_majority(scenes: np.ndarray, masks: np.ndarray, size: int = PATCH, 
         top = counts.argmax()
         ok = counts[top] >= min_share * len(v)
         keep.append(ok), label.append(int(vals[top]) if ok else -1)
-    keep = np.array(keep)
-    return x[keep], np.array(label)[keep]
+    return np.array(keep), np.array(label)
 
 
 def _precision_at_k(emb: np.ndarray, y: np.ndarray, k: int = 10) -> float:

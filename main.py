@@ -2,6 +2,7 @@
 
     uv run main.py download [--tasks a,b]
     uv run main.py run [--tasks a,b] [--models a,b] [--limit N] [--n-train N] [--n-test N]
+    uv run main.py precompute [--tasks crop_type]
     uv run main.py report
 """
 
@@ -122,6 +123,8 @@ def main():
     r.add_argument("--limit", type=int, help="Scenes or chips per split, for quick tests")
     r.add_argument("--n-train", type=int, help="Random training patches (fixed seed)")
     r.add_argument("--n-test", type=int, help="Random test patches (fixed seed)")
+    pc = sub.add_parser("precompute", help="Look up precomputed embeddings (AlphaEarth) for tasks with coordinates")
+    pc.add_argument("--tasks", default="crop_type")
     sub.add_parser("report")
     args = p.parse_args()
 
@@ -130,6 +133,11 @@ def main():
             print(f"{t}: data in {TASKS[t].download()}")
     elif args.cmd == "run":
         run(args.tasks.split(","), args.models.split(","), args.limit, args.n_train, args.n_test)
+    elif args.cmd == "precompute":
+        from scorchedearth import precomputed
+
+        for t in args.tasks.split(","):
+            precomputed.build(TASKS[t])
     elif args.cmd == "report":
         report()
 
