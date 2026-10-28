@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "einops>=0.8.2",
+    "h5py>=3.16.0",
     "huggingface-hub>=2.3.0",
     "numpy>=2.5.4",
     "olmoearth-pretrain-minimal>=0.1.5",

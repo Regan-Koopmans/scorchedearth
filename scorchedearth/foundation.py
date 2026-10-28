@@ -1,12 +1,13 @@
 """Pretrained foundation models.
 
-Input to every embedder: HLS patches (N, 6, H, W), reflectance in [0, 1],
-bands blue, green, red, nir (B8A), swir1 (B11), swir2 (B12).
+Input to every embedder: patches (N, C, H, W), reflectance in [0, 1], plus the task's
+`Bands`, which names each channel and gives its wavelength and dataset stats.
 
-Each adapter maps those bands to what the model saw in pretraining:
-- Spectrally-aware models get true HLS wavelengths.
-- Fixed 13-band Sentinel-2 models get missing bands copied from the nearest
-  available wavelength. Same rule as OlmoEarth's v1 normaliser.
+Each adapter maps the task's bands to what the model saw in pretraining:
+- Spectrally-aware models get the true wavelengths of every task band.
+- Fixed-band models (Sentinel-2, HLS) get each expected band from the task, or the
+  nearest available wavelength when the task lacks it. Same rule as OlmoEarth's v1
+  normaliser.
 - RGB models get red, green, blue.
 Patches are resized to each model's pretraining size. Pooled output is the embedding.
 """
@@ -18,27 +19,14 @@ import torch
 import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 
+from .bands import BLUE, GREEN, HLS, RED, S2_13, S2_BY_NAME, Bands
 from .models import MODELS
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
 
-# HLS S30 band centres and widths, nm.
-HLS_WAVELENGTHS = [490, 560, 665, 865, 1610, 2190]
-HLS_BANDWIDTHS = [65, 35, 30, 20, 90, 180]
-
-# Sentinel-2 L1C band centres, nm, in canonical B1..B12 order (13 bands incl. B8A, B10).
-S2_13 = {"B1": 443, "B2": 490, "B3": 560, "B4": 665, "B5": 705, "B6": 740, "B7": 783,
-         "B8": 842, "B8A": 865, "B9": 945, "B10": 1375, "B11": 1610, "B12": 2190}
-
-
-def nearest_band_map(target_nm: list[float]) -> list[int]:
-    """For each target wavelength, index of the nearest HLS band."""
-    src = np.array(HLS_WAVELENGTHS)
-    return [int(np.abs(src - t).argmin()) for t in target_nm]
-
 
 class Adapter:
-    """Lazy-loading wrapper. Subclasses implement load() and forward(t) on a device tensor."""
+    """Lazy-loading wrapper. Subclasses implement load() and forward(x, bands) on a device tensor."""
 
     name = ""
     size = 224
@@ -49,10 +37,10 @@ class Adapter:
     def load(self):
         raise NotImplementedError
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, bands: Bands) -> torch.Tensor:
         raise NotImplementedError
 
-    def __call__(self, x: np.ndarray) -> np.ndarray:
+    def __call__(self, x: np.ndarray, bands: Bands) -> np.ndarray:
         if self.model is None:
             self.load()
             self.model = self.model.eval().to(DEVICE)
@@ -60,7 +48,21 @@ class Adapter:
             t = torch.from_numpy(x).to(DEVICE)
             if self.size and t.shape[-1] != self.size:
                 t = F.interpolate(t, size=self.size, mode="bilinear", align_corners=False)
-            return self.forward(t).float().cpu().numpy()
+            return self.forward(t, bands).float().cpu().numpy()
+
+
+def stats(bands: Bands, idx: list[int] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Task's per-band mean and std as (1, C, 1, 1) device tensors, optionally reindexed."""
+    mean, std = np.array(bands.mean), np.array(bands.std)
+    if idx is not None:
+        mean, std = mean[idx], std[idx]
+    to = lambda a: torch.tensor(a, dtype=torch.float32, device=DEVICE).view(1, -1, 1, 1)
+    return to(mean), to(std)
+
+
+def standardise(x: torch.Tensor, bands: Bands) -> torch.Tensor:
+    mean, std = stats(bands)
+    return (x - mean) / std
 
 
 def register(cls):
@@ -95,7 +97,8 @@ class _Prithvi(Adapter):
         self.mean = torch.tensor(cfg["mean"], device=DEVICE).view(1, -1, 1, 1) / 10000
         self.std = torch.tensor(cfg["std"], device=DEVICE).view(1, -1, 1, 1) / 10000
 
-    def forward(self, x):
+    def forward(self, x, bands):
+        x = x[:, bands.nearest(HLS)]
         tokens = self.model.forward_features((x - self.mean) / self.std)[-1]
         return tokens[:, 1:].mean(dim=1)
 
@@ -142,11 +145,10 @@ class DOFA(Adapter):
         self.model = getattr(tg, self.build)(getattr(tg, self.weights).DOFA_MAE)
         self.model.head = torch.nn.Identity()
 
-    def forward(self, x):
-        # DOFA pretraining fed reflectance on the 0-10000 scale, then standardised per band.
-        # Without per-sensor stats, standardise each band with dataset-level HLS stats.
-        x = (x - HLS_MEAN) / HLS_STD
-        return self.model.forward_features(x, [w / 1000 for w in HLS_WAVELENGTHS])
+    def forward(self, x, bands):
+        # DOFA pretraining standardised each band per sensor. Without its stats for every
+        # sensor, standardise each band with the task's own dataset stats.
+        return self.model.forward_features(standardise(x, bands), [w / 1000 for w in bands.nm])
 
 
 @register
@@ -164,10 +166,9 @@ class Panopticon(Adapter):
 
         self.model = tg.panopticon_vitb14(tg.Panopticon_Weights.VIT_BASE14)
 
-    def forward(self, x):
-        x = (x - HLS_MEAN) / HLS_STD
-        ids = torch.tensor(HLS_WAVELENGTHS, device=x.device).expand(x.shape[0], -1)
-        return self.model({"imgs": x, "chn_ids": ids})
+    def forward(self, x, bands):
+        ids = torch.tensor(bands.nm, device=x.device).expand(x.shape[0], -1)
+        return self.model({"imgs": standardise(x, bands), "chn_ids": ids})
 
 
 @register
@@ -185,11 +186,10 @@ class CopernicusFM(Adapter):
             mod = getattr(pe, name)
             mod.forward = lambda x, d, f=mod.forward: f(x.cpu(), d).to(x.device)
 
-    def forward(self, x):
-        x = (x - HLS_MEAN) / HLS_STD
+    def forward(self, x, bands):
         meta = torch.full((x.shape[0], 4), float("nan"), device=x.device)
         return self.model.forward_features(
-            x, meta, wavelengths=HLS_WAVELENGTHS, bandwidths=HLS_BANDWIDTHS,
+            standardise(x, bands), meta, wavelengths=bands.nm, bandwidths=bands.widths,
             input_mode="spectral", kernel_size=16,
         )
 
@@ -207,19 +207,19 @@ class OlmoEarth(Adapter):
         self.model = load_model_from_id(getattr(ModelID, self.model_id), load_weights=True)
         self.normalizer = Normalizer(model_type=self.version)
         self.modality = Modality.SENTINEL2_L2A
-        order = self.modality.band_order  # B02 B03 B04 B08 B05 B06 B07 B8A B11 B12 B01 B09
-        hls = {"B02": 0, "B03": 1, "B04": 2, "B8A": 3, "B11": 4, "B12": 5}
-        self.slots = [(order.index(b), i) for b, i in hls.items()]
-        self.n_bands = len(order)
+        # B02 B03 B04 B08 B05 B06 B07 B8A B11 B12 B01 B09, as canonical bands.
+        self.order = [S2_BY_NAME[b.replace("B0", "B")] for b in self.modality.band_order]
 
-    def forward(self, x):
+    def forward(self, x, bands):
         from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.datatypes import MaskedOlmoEarthSample
 
         b, _, h, w = x.shape
-        arr = np.full((b, h, w, 1, self.n_bands), np.nan, np.float32)
+        arr = np.full((b, h, w, 1, len(self.order)), np.nan, np.float32)
         hwc = (x.permute(0, 2, 3, 1) * 10000).cpu().numpy()
-        for dst, src in self.slots:
-            arr[..., 0, dst] = hwc[..., src]
+        for dst, band in enumerate(self.order):
+            src = bands.index(band)
+            if src is not None:
+                arr[..., 0, dst] = hwc[..., src]
         norm = torch.from_numpy(self.normalizer.normalize(self.modality, arr)).float().to(DEVICE)
         ts = torch.zeros(b, 1, 3, dtype=torch.long, device=DEVICE)
         ts[..., 0], ts[..., 1], ts[..., 2] = 15, 7, 2020  # mid-summer; dates unknown per patch
@@ -262,8 +262,8 @@ class _SSL4EO(Adapter):
         self.norm = w.transforms[-1]
         self.model.reset_classifier(0) if hasattr(self.model, "reset_classifier") else None
 
-    def forward(self, x):
-        x = x[:, nearest_band_map(list(S2_13.values()))] * 10000
+    def forward(self, x, bands):
+        x = x[:, bands.nearest(S2_13)] * 10000
         return _timm_pool(self.model, self.norm(x))
 
 
@@ -313,10 +313,11 @@ class CROMA(Adapter):
 
         self.model = tg.croma_base(tg.CROMABase_Weights.CROMA_VIT, modalities=["optical"])
 
-    def forward(self, x):
-        idx = nearest_band_map([S2_13[b] for b in S2_13 if b != "B10"])
+    def forward(self, x, bands):
+        idx = bands.nearest([b for name, b in S2_BY_NAME.items() if name != "B10"])
         # CROMA scales each band from mean - 2 std .. mean + 2 std to [0, 1], using dataset stats.
-        lo, hi = (HLS_MEAN - 2 * HLS_STD)[:, idx], (HLS_MEAN + 2 * HLS_STD)[:, idx]
+        mean, std = stats(bands, idx)
+        lo, hi = mean - 2 * std, mean + 2 * std
         x = ((x[:, idx] - lo) / (hi - lo)).clamp(0, 1)
         return self.model(x_optical=x)["optical_GAP"]
 
@@ -332,11 +333,11 @@ class Satlas(Adapter):
         w = tg.Swin_V2_B_Weights.SENTINEL2_SI_MS_SATLAS
         self.model = tg.swin_v2_b(w)
         self.model.head = torch.nn.Identity()
-        self.order = [S2_13[b] for b in ("B4", "B3", "B2", "B5", "B6", "B7", "B8", "B11", "B12")]
+        self.order = [S2_BY_NAME[b] for b in ("B4", "B3", "B2", "B5", "B6", "B7", "B8", "B11", "B12")]
         self.norm = w.transforms[-1]
 
-    def forward(self, x):
-        x = x[:, nearest_band_map(self.order)] * 10000
+    def forward(self, x, bands):
+        x = x[:, bands.nearest(self.order)] * 10000
         # Satlas: RGB were 8-bit (reflectance / 10000 * 255 * ~3.2 brightening); others / 8160.
         x[:, :3] = (x[:, :3] / 10000 * 255 * 3.2).clamp(0, 255)
         return self.model(self.norm(x).clamp(0, 1))
@@ -345,9 +346,9 @@ class Satlas(Adapter):
 # --- RGB vision models: DINOv3 natural images vs satellite ---------------------------
 
 
-def display_rgb(x):
+def display_rgb(x, bands):
     """Red, green, blue reflectance brightened to display range [0, 1]."""
-    return (x[:, [2, 1, 0]] * 3.0).clamp(0, 1)
+    return (x[:, bands.nearest([RED, GREEN, BLUE])] * 3.0).clamp(0, 1)
 
 
 class _DINOv3(Adapter):
@@ -361,8 +362,8 @@ class _DINOv3(Adapter):
         self.mean = torch.tensor(cfg["mean"], device=DEVICE).view(1, 3, 1, 1)
         self.std = torch.tensor(cfg["std"], device=DEVICE).view(1, 3, 1, 1)
 
-    def forward(self, x):
-        return self.model((display_rgb(x) - self.mean) / self.std)
+    def forward(self, x, bands):
+        return self.model((display_rgb(x, bands) - self.mean) / self.std)
 
 
 @register
@@ -395,10 +396,6 @@ class ScaleMAE(Adapter):
         self.mean = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(1, 3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(1, 3, 1, 1)
 
-    def forward(self, x):
-        return self.model((display_rgb(x) - self.mean) / self.std)
+    def forward(self, x, bands):
+        return self.model((display_rgb(x, bands) - self.mean) / self.std)
 
-
-# Per-band stats of this dataset (reflectance), for models without sensor-specific stats.
-HLS_MEAN = torch.tensor([0.0566, 0.0818, 0.1031, 0.1711, 0.2284, 0.1746], device=DEVICE).view(1, 6, 1, 1)
-HLS_STD = torch.tensor([0.0312, 0.0389, 0.0533, 0.0713, 0.0835, 0.0729], device=DEVICE).view(1, 6, 1, 1)

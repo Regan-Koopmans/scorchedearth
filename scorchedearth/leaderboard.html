@@ -1,5 +1,9 @@
 <title>ScorchedEarth</title>
 <meta name="claude:viewport-fit-sides" content="cover">
+<script>
+// Apply a saved theme before first paint.
+try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <style>
 /* Layout: raw document. One column of sections, one bar chart per metric, plain rules between them. */
 :root {
@@ -25,8 +29,11 @@ body {
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
-main { max-width: 860px; }
+main { max-width: 860px; margin-inline: auto; }
 h1 { font: bold 2.4rem/1 var(--f-text); margin: 0 0 6px; }
+.top-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+#theme { font: 13px/1 var(--f-mono); color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 4px 8px; cursor: pointer; }
+#theme:focus-visible { outline: 2px solid var(--win); outline-offset: 2px; }
 h2 { font: bold 1.25rem/1.2 var(--f-text); margin: 0; }
 p { margin: 0 0 6px; }
 hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }
@@ -72,7 +79,10 @@ td:first-child, td:nth-child(2) { text-align: left; }
 </style>
 
 <main>
-  <h1>ScorchedEarth</h1>
+  <div class="top-line">
+    <h1>ScorchedEarth</h1>
+    <button id="theme" type="button" aria-label="Colour theme">Theme: system</button>
+  </div>
   <p>Geospatial embedding benchmark on HLS burn scars.</p>
   <p class="meta" id="conditions"></p>
   <ul class="winners" id="winners"></ul>
@@ -186,6 +196,21 @@ document.getElementById("winners").innerHTML = [
   `Fastest: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s.`,
   `Smallest embedding: <b>${esc(small.label)}</b>, ${fmtBytes(small.scores.bytes_per_embedding)}, linear F1 ${small.scores.linear_f1.toFixed(3)}.`,
 ].map(s => `<li>${s}</li>`).join("");
+
+// Theme toggle: system -> light -> dark -> system.
+const themeBtn = document.getElementById("theme");
+const THEMES = ["system", "light", "dark"];
+function applyTheme(t) {
+  if (t === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  themeBtn.textContent = "Theme: " + t;
+}
+applyTheme(document.documentElement.dataset.theme || "system");
+themeBtn.addEventListener("click", () => {
+  const next = THEMES[(THEMES.indexOf(themeBtn.textContent.slice(7)) + 1) % THEMES.length];
+  applyTheme(next);
+  try { next === "system" ? localStorage.removeItem("theme") : localStorage.setItem("theme", next); } catch (e) {}
+});
 
 // Full table.
 const cols = [["Model", m => esc(m.label)], ["Family", m => FAMILIES[m.family]], ...METRICS.map(x => [x.title, m => esc(x.fmt(m.scores[x.key]))]), ["Dim", m => m.scores.dim]];

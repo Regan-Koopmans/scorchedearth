@@ -1,7 +1,7 @@
 """ScorchedEarth CLI.
 
-    uv run main.py download
-    uv run main.py run [--models a,b] [--limit N]
+    uv run main.py download [--tasks a,b]
+    uv run main.py run [--tasks a,b] [--models a,b] [--limit N] [--n-train N] [--n-test N]
     uv run main.py report
 """
 
@@ -11,7 +11,8 @@ import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scorchedearth import data, foundation  # noqa: F401  foundation registers models
+from scorchedearth import foundation  # noqa: F401  foundation registers models
+from scorchedearth.datasets import TASKS
 from scorchedearth.models import MODELS
 from scorchedearth.run import RESULTS, run
 
@@ -44,7 +45,8 @@ MODEL_INFO = {
 
 
 def report():
-    rows = {p.stem: json.loads(p.read_text()) for p in sorted(RESULTS.glob("*.json")) if p.stem in MODEL_INFO}
+    # The leaderboard shows burn scars until it gains a task selector.
+    rows = {p.stem: json.loads(p.read_text()) for p in sorted((RESULTS / "burn_scars").glob("*.json")) if p.stem in MODEL_INFO}
     models = []
     for key, scores in rows.items():
         label, family, params, note = MODEL_INFO.get(key, (key, "rare", "", ""))
@@ -72,19 +74,22 @@ def torch_device() -> str:
 def main():
     p = argparse.ArgumentParser(prog="scorchedearth")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("download")
+    d = sub.add_parser("download")
+    d.add_argument("--tasks", default=",".join(TASKS))
     r = sub.add_parser("run")
+    r.add_argument("--tasks", default=",".join(TASKS))
     r.add_argument("--models", default=",".join(MODELS))
-    r.add_argument("--limit", type=int, help="Scenes per split, for quick tests")
+    r.add_argument("--limit", type=int, help="Scenes or chips per split, for quick tests")
     r.add_argument("--n-train", type=int, help="Random training patches (fixed seed)")
     r.add_argument("--n-test", type=int, help="Random test patches (fixed seed)")
     sub.add_parser("report")
     args = p.parse_args()
 
     if args.cmd == "download":
-        print(f"Data in {data.download()}")
+        for t in args.tasks.split(","):
+            print(f"{t}: data in {TASKS[t].download()}")
     elif args.cmd == "run":
-        run(args.models.split(","), args.limit, args.n_train, args.n_test)
+        run(args.tasks.split(","), args.models.split(","), args.limit, args.n_train, args.n_test)
     elif args.cmd == "report":
         report()
 

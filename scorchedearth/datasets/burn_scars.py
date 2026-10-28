@@ -1,7 +1,8 @@
-"""Download and load the HLS Burn Scars dataset.
+"""HLS Burn Scars (IBM / NASA). Wildfire scars, contiguous US, 2018-2021.
 
 Scenes: 512x512, 6 bands (Blue, Green, Red, NIR, SWIR1, SWIR2), reflectance.
 Masks: 1 = burned, 0 = not burned, -1 = no data.
+Task: binary, patch is more than half burned.
 """
 
 import tarfile
@@ -11,9 +12,18 @@ import numpy as np
 import tifffile
 from huggingface_hub import hf_hub_download
 
+from ..bands import HLS, Bands
+from ..tasks import TaskData, patchify
+
+NAME = "burn_scars"
 REPO = "ibm-nasa-geospatial/hls_burn_scars"
 DATA_DIR = Path("data")
-BANDS = ("blue", "green", "red", "nir", "swir1", "swir2")
+# Per-band reflectance stats over the training split.
+BANDS = Bands(
+    tuple(HLS),
+    mean=(0.0566, 0.0818, 0.1031, 0.1711, 0.2284, 0.1746),
+    std=(0.0312, 0.0389, 0.0533, 0.0713, 0.0835, 0.0729),
+)
 
 
 def download(data_dir: Path = DATA_DIR) -> Path:
@@ -54,3 +64,9 @@ def load_split(split: str, data_dir: Path = DATA_DIR, limit: int | None = None):
     scenes = np.stack([_chw(tifffile.imread(s)).astype(np.float32) for s, _ in pairs])
     masks = np.stack([_chw(tifffile.imread(m))[0].astype(np.int8) for _, m in pairs])
     return scenes, masks
+
+
+def load(limit: int | None = None) -> TaskData:
+    x_tr, y_tr = patchify(*load_split("training", limit=limit))
+    x_te, y_te = patchify(*load_split("validation", limit=limit))
+    return TaskData(NAME, BANDS, "binary", x_tr, y_tr, x_te, y_te)
