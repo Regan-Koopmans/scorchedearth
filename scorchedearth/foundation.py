@@ -83,6 +83,7 @@ class _Prithvi(Adapter):
             img_size=cfg["img_size"], patch_size=cfg["patch_size"], num_frames=1,
             in_chans=cfg["in_chans"], embed_dim=cfg["embed_dim"], depth=cfg["depth"],
             num_heads=cfg["num_heads"], mlp_ratio=cfg["mlp_ratio"],
+            coords_encoding=cfg.get("coords_encoding", []),
         )
         state = torch.load(hf_hub_download(self.repo, self.weights), map_location="cpu", weights_only=True)
         enc = {k.removeprefix("encoder."): v for k, v in state.items()
@@ -113,17 +114,32 @@ class Prithvi600M(_Prithvi):
     weights = "Prithvi_EO_V2_600M.pt"
 
 
+@register
+class Prithvi100M(_Prithvi):
+    name = "prithvi_eo2_100m"
+    repo = "ibm-nasa-geospatial/Prithvi-EO-2.0-100M-TL"
+    weights = "Prithvi_EO_V2_100M_TL.pt"
+
+
+@register
+class PrithviTiny(_Prithvi):
+    name = "prithvi_eo2_tiny"
+    repo = "ibm-nasa-geospatial/Prithvi-EO-2.0-tiny-TL"
+    weights = "Prithvi_EO_V2_tiny_TL.pt"
+
+
 # --- Spectrally-aware: take arbitrary bands with wavelengths ------------------------
 
 
 @register
 class DOFA(Adapter):
     name = "dofa_base"
+    build, weights = "dofa_base_patch16_224", "DOFABase16_Weights"
 
     def load(self):
         import torchgeo.models as tg
 
-        self.model = tg.dofa_base_patch16_224(tg.DOFABase16_Weights.DOFA_MAE)
+        self.model = getattr(tg, self.build)(getattr(tg, self.weights).DOFA_MAE)
         self.model.head = torch.nn.Identity()
 
     def forward(self, x):
@@ -131,6 +147,12 @@ class DOFA(Adapter):
         # Without per-sensor stats, standardise each band with dataset-level HLS stats.
         x = (x - HLS_MEAN) / HLS_STD
         return self.model.forward_features(x, [w / 1000 for w in HLS_WAVELENGTHS])
+
+
+@register
+class DOFALarge(DOFA):
+    name = "dofa_large"
+    build, weights = "dofa_large_patch16_224", "DOFALarge16_Weights"
 
 
 @register
@@ -176,13 +198,14 @@ class CopernicusFM(Adapter):
 class OlmoEarth(Adapter):
     name = "olmoearth_base"
     size = None  # resolution-aware; native 30 m input
+    model_id, version = "OLMOEARTH_V1_BASE", "v1"
 
     def load(self):
-        from olmoearth_pretrain_minimal import ModelID, NormalizerV1, load_model_from_id
+        from olmoearth_pretrain_minimal import ModelID, Normalizer, load_model_from_id
         from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.constants import Modality
 
-        self.model = load_model_from_id(ModelID.OLMOEARTH_V1_BASE, load_weights=True)
-        self.normalizer = NormalizerV1()
+        self.model = load_model_from_id(getattr(ModelID, self.model_id), load_weights=True)
+        self.normalizer = Normalizer(model_type=self.version)
         self.modality = Modality.SENTINEL2_L2A
         order = self.modality.band_order  # B02 B03 B04 B08 B05 B06 B07 B8A B11 B12 B01 B09
         hls = {"B02": 0, "B03": 1, "B04": 2, "B8A": 3, "B11": 4, "B12": 5}
@@ -206,6 +229,18 @@ class OlmoEarth(Adapter):
         )
         tm = self.model.encoder(sample, patch_size=8, input_res=30, fast_pass=True)["tokens_and_masks"]
         return tm.sentinel2_l2a.mean(dim=(1, 2, 3, 4))
+
+
+@register
+class OlmoEarthLarge(OlmoEarth):
+    name = "olmoearth_large"
+    model_id = "OLMOEARTH_V1_LARGE"
+
+
+@register
+class OlmoEarth12(OlmoEarth):
+    name = "olmoearth_v1_2_base"
+    model_id, version = "OLMOEARTH_V1_2_BASE", "v1.2"
 
 
 # --- Fixed 13-band Sentinel-2 models (SSL4EO-S12, CROMA, Satlas) ---------------------
@@ -248,6 +283,18 @@ class SSL4EO_DINO_ViTS(_SSL4EO):
 class SSL4EO_MAE_ViTB(_SSL4EO):
     name = "ssl4eo_mae_vitb16"
     weights, build = "ViTBase16_Weights.SENTINEL2_ALL_MAE", "vit_base_patch16_224"
+
+
+@register
+class SSL4EO_MAE_ViTL(_SSL4EO):
+    name = "ssl4eo_mae_vitl16"
+    weights, build = "ViTLarge16_Weights.SENTINEL2_ALL_MAE", "vit_large_patch16_224"
+
+
+@register
+class DeCUR_R50(_SSL4EO):
+    name = "decur_resnet50"
+    weights, build = "ResNet50_Weights.SENTINEL2_ALL_DECUR", "resnet50"
 
 
 @register
@@ -298,20 +345,24 @@ class Satlas(Adapter):
 # --- RGB vision models: DINOv3 natural images vs satellite ---------------------------
 
 
+def display_rgb(x):
+    """Red, green, blue reflectance brightened to display range [0, 1]."""
+    return (x[:, [2, 1, 0]] * 3.0).clamp(0, 1)
+
+
 class _DINOv3(Adapter):
     timm_name = ""
 
     def load(self):
         import timm
 
-        self.model = timm.create_model(self.timm_name, pretrained=True, num_classes=0)
+        self.model = timm.create_model(self.timm_name, pretrained=True, num_classes=0, img_size=self.size)
         cfg = self.model.pretrained_cfg
         self.mean = torch.tensor(cfg["mean"], device=DEVICE).view(1, 3, 1, 1)
         self.std = torch.tensor(cfg["std"], device=DEVICE).view(1, 3, 1, 1)
 
     def forward(self, x):
-        rgb = (x[:, [2, 1, 0]] * 3.0).clamp(0, 1)  # brighten reflectance to display range
-        return self.model((rgb - self.mean) / self.std)
+        return self.model((display_rgb(x) - self.mean) / self.std)
 
 
 @register
@@ -324,6 +375,28 @@ class DINOv3_Web(_DINOv3):
 class DINOv3_Sat(_DINOv3):
     name = "dinov3_vitl16_sat"
     timm_name = "vit_large_patch16_dinov3.sat493m"
+
+
+@register
+class DINOv2_Web(_DINOv3):
+    name = "dinov2_vitb14_web"
+    timm_name = "vit_base_patch14_dinov2.lvd142m"
+
+
+@register
+class ScaleMAE(Adapter):
+    name = "scalemae_large"
+
+    def load(self):
+        import torchgeo.models as tg
+
+        self.model = tg.scalemae_large_patch16(tg.ScaleMAELarge16_Weights.FMOW_RGB, res=30.0)
+        self.model.reset_classifier(0)
+        self.mean = torch.tensor([0.485, 0.456, 0.406], device=DEVICE).view(1, 3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225], device=DEVICE).view(1, 3, 1, 1)
+
+    def forward(self, x):
+        return self.model((display_rgb(x) - self.mean) / self.std)
 
 
 # Per-band stats of this dataset (reflectance), for models without sensor-specific stats.

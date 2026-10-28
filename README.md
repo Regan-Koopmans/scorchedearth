@@ -35,35 +35,20 @@ uv run main.py report                # results/*.json -> index.html, one bar cha
 
 | Family | Models | Band handling |
 |---|---|---|
-| Baselines | band stats, NDVI + NBR, random projection | native |
-| HLS-native | Prithvi-EO 2.0 300M, 600M | same six bands |
-| Any-sensor | DOFA, Panopticon, Copernicus-FM, OlmoEarth | true HLS wavelengths |
-| Sentinel-2 | SSL4EO MoCo/DINO/MAE, SoftCon, CROMA, Satlas | missing S2 bands copied from nearest wavelength |
-| RGB vision | DINOv3 ViT-B (web), DINOv3 ViT-L (satellite) | red, green, blue |
+| HLS-native | Prithvi-EO 2.0 tiny, 100M, 300M, 600M | same six bands |
+| Any-sensor | DOFA-B/L, Panopticon, Copernicus-FM, OlmoEarth v1 Base/Large, v1.2 Base | true HLS wavelengths |
+| Sentinel-2 | SSL4EO MoCo R50, DINO ViT-S, MAE ViT-B/L, DeCUR R50, SoftCon, CROMA, Satlas | missing S2 bands copied from nearest wavelength |
+| RGB vision | DINOv2 ViT-B, DINOv3 ViT-B (web), DINOv3 ViT-L (satellite), Scale-MAE | red, green, blue |
 
 Deep models get patches resized to their pretraining size (224 px, CROMA 120, Satlas 256).
 OlmoEarth is resolution-aware and takes 64 px at 30 m. Adapters live in `scorchedearth/foundation.py`.
 
-Not included: TerraMind (its terratorch release conflicts with the torchgeo used here), Clay (no packaged loader).
+Not included: TerraMind (its terratorch release conflicts with the torchgeo used here), Clay (no packaged loader),
+CROMA-L (torchgeo's weight checksum fails).
 
 ## Adding a model
 
-Baselines: write a function in `scorchedearth/models.py` mapping `(N, 6, H, W)` float32 patches to `(N, D)`:
-
-```python
-@register("my_model")
-def my_model(x):
-    return encoder(x)
-```
-
-Pretrained models: subclass `Adapter` in `scorchedearth/foundation.py`, implement `load()` and `forward()`.
+Subclass `Adapter` in `scorchedearth/foundation.py`, implement `load()` and `forward()`, decorate with `@register`.
+`forward` receives a device tensor `(N, 6, H, W)` already resized to `size`, and returns `(N, D)`.
 
 Bands, in order: blue, green, red, NIR, SWIR1, SWIR2. Values are reflectance.
-
-## Baselines
-
-- `band_stats`: per-band mean and std
-- `spectral_indices`: NDVI and NBR statistics plus band means
-- `random_projection`: random projection of downsampled pixels
-
-Any learned model must beat these.

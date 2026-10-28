@@ -6,39 +6,45 @@
 """
 
 import argparse
-import platform
 import json
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
-from scorchedearth import data
-from scorchedearth import foundation  # noqa: F401  registers pretrained models
+from scorchedearth import data, foundation  # noqa: F401  foundation registers models
 from scorchedearth.models import MODELS
 from scorchedearth.run import RESULTS, run
 
 # Display name, family (item quality), size, note. Family drives colour on the leaderboard.
 MODEL_INFO = {
-    "band_stats": ("Band stats", "normal", "", "Per-band mean and std."),
-    "spectral_indices": ("NDVI + NBR", "normal", "", "Burn and vegetation indices plus band means."),
-    "random_projection": ("Random projection", "normal", "", "Sanity floor."),
     "prithvi_eo2_300m": ("Prithvi-EO 2.0 300M", "unique", "300M", "Pretrained on HLS, same six bands."),
     "prithvi_eo2_600m": ("Prithvi-EO 2.0 600M", "unique", "600M", "Pretrained on HLS, same six bands."),
-    "dofa_base": ("DOFA", "magic", "ViT-B", "Wavelength-conditioned patch embedding."),
+    "prithvi_eo2_100m": ("Prithvi-EO 2.0 100M", "unique", "100M", "Pretrained on HLS, same six bands."),
+    "prithvi_eo2_tiny": ("Prithvi-EO 2.0 tiny", "unique", "5M", "Pretrained on HLS, same six bands."),
+    "dofa_base": ("DOFA-B", "magic", "ViT-B", "Wavelength-conditioned patch embedding."),
+    "dofa_large": ("DOFA-L", "magic", "ViT-L", "Wavelength-conditioned patch embedding."),
     "panopticon": ("Panopticon", "magic", "ViT-B", "Channel attention over any band set."),
     "copernicus_fm": ("Copernicus-FM", "magic", "ViT-B", "Wavelength and bandwidth hypernetwork."),
-    "olmoearth_base": ("OlmoEarth", "magic", "Base", "Missing S2 bands filled per its v1 rule."),
+    "olmoearth_base": ("OlmoEarth v1 Base", "magic", "Base", "Missing S2 bands copied from nearest (v1 rule)."),
+    "olmoearth_large": ("OlmoEarth v1 Large", "magic", "Large", "Missing S2 bands copied from nearest (v1 rule)."),
+    "olmoearth_v1_2_base": ("OlmoEarth v1.2 Base", "magic", "Base", "Missing S2 bands zeroed (trained with band dropout)."),
     "ssl4eo_moco_resnet50": ("SSL4EO MoCo R50", "rare", "ResNet-50", "13-band S2. Missing bands copied from nearest."),
     "ssl4eo_dino_vits16": ("SSL4EO DINO ViT-S", "rare", "ViT-S", "13-band S2. Missing bands copied from nearest."),
     "ssl4eo_mae_vitb16": ("SSL4EO MAE ViT-B", "rare", "ViT-B", "13-band S2. Missing bands copied from nearest."),
+    "ssl4eo_mae_vitl16": ("SSL4EO MAE ViT-L", "rare", "ViT-L", "13-band S2. Missing bands copied from nearest."),
+    "decur_resnet50": ("DeCUR R50", "rare", "ResNet-50", "13-band S2. Missing bands copied from nearest."),
     "softcon_vitb14": ("SoftCon ViT-B", "rare", "ViT-B", "13-band S2. Missing bands copied from nearest."),
     "croma_base": ("CROMA", "rare", "ViT-B", "12-band S2 optical encoder."),
     "satlas_swinb_s2": ("Satlas Swin-B", "rare", "Swin-B", "9-band S2."),
     "dinov3_vitb16_web": ("DINOv3 ViT-B (web)", "set", "ViT-B", "RGB only. Natural images."),
     "dinov3_vitl16_sat": ("DINOv3 ViT-L (sat)", "set", "ViT-L", "RGB only. 493M satellite images."),
+    "dinov2_vitb14_web": ("DINOv2 ViT-B (web)", "set", "ViT-B", "RGB only. Natural images."),
+    "scalemae_large": ("Scale-MAE", "set", "ViT-L", "RGB only. fMoW, told input is 30 m."),
 }
 
 
 def report():
-    rows = {p.stem: json.loads(p.read_text()) for p in sorted(RESULTS.glob("*.json"))}
+    rows = {p.stem: json.loads(p.read_text()) for p in sorted(RESULTS.glob("*.json")) if p.stem in MODEL_INFO}
     models = []
     for key, scores in rows.items():
         label, family, params, note = MODEL_INFO.get(key, (key, "rare", "", ""))
@@ -48,7 +54,8 @@ def report():
         f"{len(models)} models. {any_run.get('n_train', 0):,} training and {any_run.get('n_test', 0):,} test patches "
         f"of 64\u00d764 px, fixed random sample. Speed on {platform.machine()} {torch_device()}, batch 64."
     )
-    data = json.dumps({"models": models, "conditions": conditions}).replace("</", "<\\/")
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    data = json.dumps({"models": models, "conditions": conditions, "generated": generated}).replace("</", "<\\/")
     template = (Path(__file__).parent / "scorchedearth" / "leaderboard.html").read_text()
     Path("index.html").write_text(template.replace("__DATA__", data))
     print(f"Wrote index.html with {len(models)} models")

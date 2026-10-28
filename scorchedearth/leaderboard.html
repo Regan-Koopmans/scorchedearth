@@ -12,6 +12,10 @@
   --f-text: "Times New Roman", Times, serif;
   --f-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace;
 }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme: dark; --paper: #000000; --ink: #ffffff; --grey: #999999; --rule: #ffffff; --win: #6f9fff; }
+}
+:root[data-theme="dark"] { color-scheme: dark; --paper: #000000; --ink: #ffffff; --grey: #999999; --rule: #ffffff; --win: #6f9fff; }
 * { box-sizing: border-box; }
 body {
   background: var(--paper);
@@ -84,13 +88,13 @@ td:first-child, td:nth-child(2) { text-align: left; }
   <hr>
   <p class="meta">Data: HLS Burn Scars (IBM / NASA, CC-BY-4.0). 804 scenes, 512&times;512, six bands, 2018&ndash;2021, contiguous US.<br>
   Frozen embeddings. Probes trained on the training split, scored on validation. Blue marks the winner of each metric.</p>
+  <p class="meta">Generated <time id="generated"></time>.</p>
 </main>
 
 <script>
 const DATA = __DATA__;
 
 const FAMILIES = {
-  normal: "baseline",
   unique: "HLS",
   magic: "any-sensor",
   rare: "S2",
@@ -102,7 +106,7 @@ const METRICS = [
   { key: "knn_f1", title: "kNN F1", what: "20 nearest neighbours vote on the same label. No training.", fmt: v => v.toFixed(3) },
   { key: "fraction_r2", title: "Burned fraction R²", what: "Ridge probe. How much of the patch burned?", fmt: v => v.toFixed(3) },
   { key: "retrieval_p@10", title: "Retrieval P@10", what: "Of the 10 nearest patches to a burned patch, the share that are burned.", fmt: v => v.toFixed(3) },
-  { key: "linear_auc", title: "Linear AUC", what: "Ranking quality of the logistic probe. Every model scores high here.", fmt: v => v.toFixed(3) },
+  { key: "linear_auc", title: "Linear AUC", what: "How often the logistic probe ranks a burned patch above an unburned one. 0.5 is chance, 1 is perfect.", fmt: v => v.toFixed(3) },
   { key: "patches_per_sec", title: "Inference speed", what: "Patches embedded per second. Log scale.", fmt: v => fmtNum(v) + "/s", log: true },
   { key: "bytes_per_embedding", title: "Embedding size", what: "Bytes per patch at float32. Smaller is better. Log scale.", fmt: v => fmtBytes(v), log: true, lowerBetter: true },
 ];
@@ -113,6 +117,9 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<":
 
 const models = DATA.models;
 document.getElementById("conditions").textContent = DATA.conditions;
+const gen = document.getElementById("generated");
+gen.textContent = DATA.generated;
+gen.dateTime = DATA.generated.replace(" ", "T").replace(" UTC", "Z");
 
 function ranked(metric) {
   const rows = models.filter(m => Number.isFinite(m.scores[metric.key]));
@@ -167,18 +174,17 @@ function chart(metric) {
 document.getElementById("charts").innerHTML = METRICS.map(chart).join("");
 
 // Winners, summary before detail.
-const deep = models.filter(m => m.family !== "normal");
 const by = (list, key) => [...list].sort((a, b) => b.scores[key] - a.scores[key])[0];
 const accKeys = ["linear_f1", "knn_f1", "fraction_r2", "retrieval_p@10"];
 const meanRank = m => accKeys.reduce((s, k) => s + ranked(METRICS.find(x => x.key === k)).indexOf(m) + 1, 0) / accKeys.length;
 const overall = [...models].sort((a, b) => meanRank(a) - meanRank(b))[0];
-const bestBase = by(models.filter(m => m.family === "normal"), "linear_f1");
-const fast = by(deep, "patches_per_sec");
+const fast = by(models, "patches_per_sec");
+const small = [...models].sort((a, b) => a.scores.bytes_per_embedding - b.scores.bytes_per_embedding || b.scores.linear_f1 - a.scores.linear_f1)[0];
 document.getElementById("winners").innerHTML = [
   `Best overall: <b>${esc(overall.label)}</b>, mean rank ${meanRank(overall).toFixed(1)} across 4 accuracy tests.`,
   `Best linear F1: <b>${esc(by(models, "linear_f1").label)}</b>, ${by(models, "linear_f1").scores.linear_f1.toFixed(3)}.`,
-  `Fastest foundation model: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s.`,
-  `Baseline to beat: <b>${esc(bestBase.label)}</b>, linear F1 ${bestBase.scores.linear_f1.toFixed(3)} in ${fmtBytes(bestBase.scores.bytes_per_embedding)}.`,
+  `Fastest: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s.`,
+  `Smallest embedding: <b>${esc(small.label)}</b>, ${fmtBytes(small.scores.bytes_per_embedding)}, linear F1 ${small.scores.linear_f1.toFixed(3)}.`,
 ].map(s => `<li>${s}</li>`).join("");
 
 // Full table.
