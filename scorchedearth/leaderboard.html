@@ -84,6 +84,8 @@ section { display: grid; gap: 6px; }
 .scatter .axis-title { fill: var(--ink); font-size: 13px; }
 .scatter .base { stroke: var(--grey); stroke-dasharray: 5 4; }
 .scatter .base-label { fill: var(--grey); font-size: 12px; }
+.scatter .pareto { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-opacity: 0.55; stroke-linejoin: round; }
+.scatter .pareto-label { fill: var(--grey); font-size: 12px; }
 .scatter .pt { fill: var(--ink); stroke: var(--paper); stroke-width: 2; }
 .scatter .lab { fill: var(--win); font-size: 12px; font-weight: bold; visibility: hidden; pointer-events: none; }
 .scatter g.hot .pt, .scatter g[tabindex]:focus-visible .pt { fill: var(--win); }
@@ -294,6 +296,18 @@ function scatter(points, base) {
     <text class="base-label" x="${L + 6}" y="${sy(base.y) - 6}">best baseline: ${esc(base.label)} ${base.y.toFixed(3)}</text>` : "";
   // Non-frontier first, so frontier dots sit on top.
   for (const p of points) SCATTER_INFO[p.id] = { ...p, front: front.has(p.id) };
+  const fp = sorted.filter(p => front.has(p.id));
+  let pareto = "";
+  if (fp.length) {
+    const pts = [[px(fp[0]), sy(fp[0].y)]];
+    for (let k = 1; k < fp.length; k++) {
+      pts.push([px(fp[k]), sy(fp[k - 1].y)], [px(fp[k]), sy(fp[k].y)]);
+    }
+    pts.push([L + pw, sy(fp.at(-1).y)]);  // best score holds for every larger size
+    const last = pts.at(-1);
+    pareto = `<polyline class="pareto" points="${pts.map(q => q.join(",")).join(" ")}"/>` +
+      `<text class="pareto-label" x="${last[0] - 4}" y="${last[1] - 6}" text-anchor="end">Pareto frontier</text>`;
+  }
   const dots = points.map(p => {
     const x = px(p), anchor = x > L + pw * 0.6 ? "end" : x < L + pw * 0.15 ? "start" : "middle";
     return `<g tabindex="0" data-id="${esc(p.id)}" aria-label="${esc(`${p.label}: ${fmtBytes(p.x)}, mean linear F1 ${p.y.toFixed(3)}`)}">` +
@@ -303,9 +317,9 @@ function scatter(points, base) {
   }).join("");
   return `<hr><section>
     <h2>Embedding size against score</h2>
-    <p class="what">Each dot is a foundation model. Up and to the left is better: a higher score from a smaller embedding. Hover or tap a dot for its name and details, including whether it is on the frontier: no other model scores higher with an embedding as small. Models with the same size are spread slightly sideways so none are hidden.</p>
+    <p class="what">Each dot is a foundation model. Up and to the left is better: a higher score from a smaller embedding. The line is the Pareto frontier: the best score reachable at each embedding size. Models on it are not beaten by any model with an embedding as small. Hover or tap a dot for its name and details. Models with the same size are spread slightly sideways so none are hidden.</p>
     <div class="scatter"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Scatter of embedding size against mean linear F1 for ${points.length} models">
-      ${grid}<rect class="frame" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="none"/>${ticks}${baseLine}${dots}
+      ${grid}<rect class="frame" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="none"/>${ticks}${baseLine}${pareto}${dots}
       <text class="axis-title" x="${L + pw / 2}" y="${H - 10}" text-anchor="middle">Embedding size per patch (log scale)</text>
       <text class="axis-title" transform="translate(16 ${T + ph / 2}) rotate(-90)" text-anchor="middle">Mean linear F1 across tasks</text>
     </svg></div>
@@ -413,7 +427,7 @@ function render(taskId) {
     const bases = models.filter(m => m.family === "normal").map(m => ({ label: m.label, y: meanF1[m.id] }));
     const base = bases.sort((a, b) => b.y - a.y)[0];
     charts.innerHTML = models.length
-      ? metrics.map(m => chart(models, m)).join("") + (pts.length > 1 ? scatter(pts, base) : "") + COST.map(m => chart(cost, m)).join("")
+      ? (pts.length > 1 ? scatter(pts, base) : "") + metrics.map(m => chart(models, m)).join("") + COST.map(m => chart(cost, m)).join("")
       : `<p class="empty">No results yet.</p>`;
     const best = ranked(models, metrics[0])[0];
     const learned = cost.filter(m => m.family !== "normal");
