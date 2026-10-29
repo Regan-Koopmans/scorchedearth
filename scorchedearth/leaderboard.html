@@ -410,40 +410,42 @@ function render(taskId) {
 
   if (isOverall) {
     const models = overallModels();
-    document.getElementById("task-what").textContent = `Each model's average rank across the ${done.length} tasks with results. Per task, rank is the mean of its accuracy ranks.`;
+    document.getElementById("task-what").textContent = `Each model's linear F1 averaged across the ${done.length} tasks with results, then per task. Crop type uses macro F1 over its 13 classes.`;
     document.getElementById("conditions").textContent = done.length < 2 ? "Only one task has results so far, so this view matches it." : "";
     document.getElementById("credit").textContent = "Data credits are listed on each task's tab.";
-    const metrics = [{ key: "mean_rank", title: "Mean rank across tasks", what: "Lower is better. 1 would mean first on every task.", fmt: v => v.toFixed(1), lowerBetter: true },
-      ...done.map(t => ({ key: "rank_" + t.id, title: t.title + " rank", what: t.short, fmt: v => v.toFixed(0), lowerBetter: true }))];
     const cost = costModels();
     const f1 = {};
     for (const t of done) for (const m of t.models) (f1[m.id] ??= []).push(m.scores.linear_f1);
     const meanF1 = Object.fromEntries(models.map(m => [m.id, f1[m.id].reduce((a, b) => a + b, 0) / f1[m.id].length]));
+    // Scores, not ranks: mean linear F1, then each task's linear F1.
+    const scored = models.map(m => ({ ...m, scores: { ...m.scores, mean_f1: meanF1[m.id],
+      ...Object.fromEntries(done.map(t => ["f1_" + t.id, t.models.find(x => x.id === m.id).scores.linear_f1])) } }));
+    const metrics = [{ key: "mean_f1", title: "Mean linear F1 across tasks", what: "Average of each task's linear F1. Higher is better.", fmt: v => v.toFixed(3) },
+      ...done.map(t => ({ key: "f1_" + t.id, title: t.title + " linear F1", what: t.short, fmt: v => v.toFixed(3) }))];
     const bytes = Object.fromEntries(cost.map(m => [m.id, m.scores.bytes_per_embedding]));
     const costOf = Object.fromEntries(cost.map(m => [m.id, m.scores]));
     const pts = models.filter(m => m.family !== "normal").map(m => ({ ...m, x: bytes[m.id], y: meanF1[m.id],
-      dim: costOf[m.id].dim, speed: costOf[m.id].patches_per_sec, meanRank: m.scores.mean_rank,
+      dim: costOf[m.id].dim, speed: costOf[m.id].patches_per_sec,
       perTask: done.map(t => [t.title, t.models.find(x => x.id === m.id).scores.linear_f1]) }));
     const bases = models.filter(m => m.family === "normal").map(m => ({ label: m.label, y: meanF1[m.id] }));
     const base = bases.sort((a, b) => b.y - a.y)[0];
     charts.innerHTML = models.length
-      ? (pts.length > 1 ? scatter(pts, base) : "") + metrics.map(m => chart(models, m)).join("") + COST.map(m => chart(cost, m)).join("")
+      ? (pts.length > 1 ? scatter(pts, base) : "") + metrics.map(m => chart(scored, m)).join("") + COST.map(m => chart(cost, m)).join("")
       : `<p class="empty">No results yet.</p>`;
-    const best = ranked(models, metrics[0])[0];
+    const best = ranked(scored.filter(m => m.family !== "normal"), metrics[0])[0];
     const learned = cost.filter(m => m.family !== "normal");
     const fast = ranked(learned, COST[0])[0], small = ranked(learned, COST[1])[0];
     winners.innerHTML = [
-      best && `Best across tasks: <b>${esc(best.label)}</b>, mean rank ${best.scores.mean_rank.toFixed(1)}.`,
+      best && `Best across tasks: <b>${esc(best.label)}</b>, mean linear F1 ${best.scores.mean_f1.toFixed(3)}.`,
       fast && `Fastest foundation model: <b>${esc(fast.label)}</b>, ${fmtNum(fast.scores.patches_per_sec)} patches/s on average.`,
       small && `Smallest foundation embedding: <b>${esc(small.label)}</b>, ${fmtBytes(small.scores.bytes_per_embedding)}.`,
     ].filter(Boolean).map(s => `<li>${s}</li>`).join("");
-    const rankOf = Object.fromEntries(models.map(m => [m.id, m.scores]));
+    const scoreOf = Object.fromEntries(scored.map(m => [m.id, m.scores]));
     const cols = [["Model", m => esc(m.label)], ["Family", m => FAMILIES[m.family]],
-      ["Mean linear F1", m => m.id in meanF1 ? meanF1[m.id].toFixed(3) : "\u2013"],
-      ["Mean rank", m => rankOf[m.id] ? rankOf[m.id].mean_rank.toFixed(1) : "\u2013"],
-      ...done.map(t => [t.title + " rank", m => rankOf[m.id] ? String(rankOf[m.id]["rank_" + t.id]) : "\u2013"]),
+      ["Mean linear F1", m => scoreOf[m.id] ? scoreOf[m.id].mean_f1.toFixed(3) : "\u2013"],
+      ...done.map(t => [t.title, m => scoreOf[m.id] ? scoreOf[m.id]["f1_" + t.id].toFixed(3) : "\u2013"]),
       ["Speed (avg)", m => fmtNum(m.scores.patches_per_sec) + "/s"], ["Size", m => m.family === "normal" ? "varies" : fmtBytes(m.scores.bytes_per_embedding)], ["Dim", m => m.family === "normal" ? "varies" : m.scores.dim]];
-    const order = [...cost].sort((a, b) => (rankOf[a.id]?.mean_rank ?? 1e9) - (rankOf[b.id]?.mean_rank ?? 1e9));
+    const order = [...cost].sort((a, b) => (scoreOf[b.id]?.mean_f1 ?? -1) - (scoreOf[a.id]?.mean_f1 ?? -1));
     table.innerHTML = `<thead><tr>${cols.map(c => `<th>${esc(c[0])}</th>`).join("")}</tr></thead><tbody>` +
       order.map(m => `<tr>${cols.map(c => `<td>${c[1](m)}</td>`).join("")}</tr>`).join("") + "</tbody>";
     details.hidden = false;
@@ -525,7 +527,6 @@ function showTip(g, x, y) {
     Embedding: ${esc(fmtBytes(p.x))} (${p.dim} dims)<br>
     Mean linear F1: ${p.y.toFixed(3)}<br>
     ${p.perTask.map(([t, v]) => `<span class="muted">&nbsp;&nbsp;${esc(t)}: ${v.toFixed(3)}</span>`).join("<br>")}<br>
-    Mean rank: ${p.meanRank.toFixed(1)}<br>
     Speed: ${esc(fmtNum(p.speed))} patches/s (avg)<br>
     ${p.front ? `<span class="front">On the frontier</span><br>` : ""}
     ${p.note ? `<span class="muted">${esc(p.note)}</span>` : ""}`;

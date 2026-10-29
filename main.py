@@ -51,6 +51,7 @@ MODEL_INFO = {
 # Precomputed sources: label, family tag, note. Results live in results/precomputed/<task>/<source>.json.
 PRECOMPUTED_INFO = {
     "alphaearth": ("AlphaEarth", "precomputed", "Google / Google DeepMind. Annual 2022 embedding from many sensors, 64 dims per 10 m pixel, averaged per patch. Read from the unofficial TGE Labs copy."),
+    "olmoearth": ("OlmoEarth v1.3", "precomputed", "Ai2. Annual 2022 embedding from Sentinel-1, Sentinel-2 and Landsat; first 64 of 128 dims per 10 m pixel, averaged per patch. OlmoEarth Artifact License."),
 }
 
 # Leaderboard text per task. `words` fills the metric descriptions.
@@ -136,6 +137,7 @@ def main():
     r.add_argument("--n-test", type=int, help="Random test patches (fixed seed)")
     pc = sub.add_parser("precompute", help="Look up precomputed embeddings (AlphaEarth) for tasks with coordinates")
     pc.add_argument("--tasks", default="crop_type")
+    pc.add_argument("--source", default="alphaearth", choices=["alphaearth", "olmoearth"])
     sub.add_parser("report")
     args = p.parse_args()
 
@@ -148,7 +150,7 @@ def main():
         from scorchedearth import precomputed
 
         for t in args.tasks.split(","):
-            precomputed.build(TASKS[t])
+            precomputed.build(TASKS[t], args.source)
     elif args.cmd == "report":
         report()
 

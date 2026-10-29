@@ -172,8 +172,123 @@ def embed_patches(patches: list[tuple], year: int, workers: int = 3, log=print, 
     return out
 
 
+# --- OlmoEarth v1.3 (Ai2) ------------------------------------------------------------
+# Annual, 128 dims per 10 m pixel (the first 64 are a complete Matryoshka embedding), on
+# Source Cooperative as a Zarr v3 store with one group per UTM zone. No overviews, so each
+# patch is averaged at 10 m. Reads are grouped by 256 px chunk row so that patches sharing
+# chunks fetch them once. OlmoEarth Artifact License.
+
+OLMO_URL = "s3://olmoearth/olmoearth-v1-3-embeddings/embeddings.zarr"
+OLMO_DIM = 64  # bands 0:64, stored in their own chunks, half the download of all 128
+CHUNK = 256
+
+
+def _olmo_root():
+    import zarr
+    from obstore.store import S3Store
+
+    zarr.config.set({"array.sharding_coalesce_max_gap_bytes": 0})
+    s3 = S3Store.from_url(OLMO_URL, endpoint="https://data.source.coop", skip_signature=True)
+    return zarr.open_group(zarr.storage.ObjectStore(s3, read_only=True), mode="r")
+
+
+def _olmo_windows(patches: list[tuple], root) -> list[tuple]:
+    """(zone, row0, row1, col0, col1) pixel window per patch in its UTM zone's grid."""
+    from pyproj import Transformer
+
+    out, tf_cache = [], {}
+    for crs, w, s_, e, n in patches:
+        lon, lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform((w + e) / 2, (s_ + n) / 2)
+        zone = f"utm{int((lon + 180) // 6) + 1:02d}"
+        zg = root[zone]
+        key = (str(crs), zone)
+        if key not in tf_cache:
+            tf_cache[key] = (Transformer.from_crs(crs, zg.attrs["proj:code"], always_xy=True), zg.attrs["spatial:transform"])
+        tf, (a, _, c, _, ey, f) = tf_cache[key]
+        xs, ys = tf.transform([w, e, w, e], [s_, s_, n, n])
+        out.append((zone, int((max(ys) - f) / ey), int(np.ceil((min(ys) - f) / ey)),
+                    int((min(xs) - c) / a), int(np.ceil((max(xs) - c) / a))))
+    return out
+
+
+def _olmo_dequantise(q: np.ndarray) -> np.ndarray:
+    v = np.where(q == NODATA, np.nan, q).astype(np.float32)
+    return (np.abs(v) / 127.5) ** 2.0 * np.sign(v)
+
+
+def _olmo_block(root, zone, t, rows, cols, items, tries=5):
+    """Read one block of whole chunks once and average every patch window inside it."""
+    r0, r1, c0, c1 = rows[0] * CHUNK, (rows[1] + 1) * CHUNK, cols[0] * CHUNK, (cols[1] + 1) * CHUNK
+    for attempt in range(tries):
+        try:
+            q = root[zone]["embeddings"][t, 0:OLMO_DIM, r0:r1, c0:c1]
+            break
+        except Exception:
+            if attempt == tries - 1:
+                raise
+            time.sleep(5 * 2**attempt)
+    v = _olmo_dequantise(q)
+    out = []
+    for i, (_, pr0, pr1, pc0, pc1) in items:
+        win = v[:, pr0 - r0 : pr1 - r0, pc0 - c0 : pc1 - c0]
+        ok = np.isfinite(win).all(axis=0)
+        out.append((i, win[:, ok].mean(axis=1) if ok.any() else np.full(OLMO_DIM, np.nan, np.float32)))
+    return out
+
+
+def olmoearth_patches(patches: list[tuple], year: int, workers: int = 8, log=print, partial: Path | None = None) -> np.ndarray:
+    """OlmoEarth v1.3 embedding (first 64 dims) per patch, averaged at 10 m. Same contract
+    as embed_patches: (N, 64) float32, NaN rows where no data; resumable via `partial`."""
+    root = _olmo_root()
+    wins = _olmo_windows(patches, root)
+    times = {z: int(np.where(root[z]["time"][:] == year)[0][0]) for z in {w[0] for w in wins}}
+    # Group patches by (zone, chunk-row band): one read per band of chunks they share.
+    groups: dict[tuple, list] = {}
+    for i, w in enumerate(wins):
+        zone, pr0, pr1, pc0, pc1 = w
+        groups.setdefault((zone, pr0 // CHUNK, (pr1 - 1) // CHUNK, pc0 // (CHUNK * 8)), []).append((i, w))
+    out = np.full((len(patches), OLMO_DIM), np.nan, np.float32)
+    done: set[str] = set()
+    if partial is not None and partial.exists():
+        z = np.load(partial, allow_pickle=False)
+        out, done = z["emb"], set(z["done"].tolist())
+    keyname = lambda k: "|".join(map(str, k))
+    todo = {k: v for k, v in groups.items() if keyname(k) not in done}
+    log(f"  {len(patches):,} patches in {len(groups)} read blocks across {len(times)} UTM zones; {len(groups) - len(todo)} done")
+
+    def save():
+        if partial is not None:
+            np.savez(partial, emb=out, done=np.array(sorted(done)))
+
+    t0, n, failed = time.time(), 0, 0
+    with ThreadPoolExecutor(workers) as pool:
+        futs = {}
+        for k, items in todo.items():
+            zone = k[0]
+            rows = (min(w[1] for _, w in items) // CHUNK, (max(w[2] for _, w in items) - 1) // CHUNK)
+            cols = (min(w[3] for _, w in items) // CHUNK, (max(w[4] for _, w in items) - 1) // CHUNK)
+            futs[pool.submit(_olmo_block, root, zone, times[zone], rows, cols, items)] = k
+        for f in as_completed(futs):
+            k = futs[f]
+            try:
+                for i, v in f.result():
+                    out[i] = v
+                done.add(keyname(k))
+            except Exception as e:
+                failed += 1
+                log(f"  FAILED after retries, patches left empty: {k} ({type(e).__name__})")
+            n += 1
+            if n % 25 == 0 or n == len(todo):
+                save()
+                log(f"  {n}/{len(todo)} blocks, {time.time() - t0:.0f}s")
+    save()
+    if failed:
+        log(f"  {failed} blocks failed; rerun to retry them")
+    return out
+
+
 CACHE = Path("cache/precomputed")
-SOURCES = {"alphaearth": embed_patches}
+SOURCES = {"alphaearth": embed_patches, "olmoearth": olmoearth_patches}
 
 
 def build(task_module, source: str = "alphaearth") -> dict:
